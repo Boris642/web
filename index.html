@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>台股即時模擬交易台</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="market-strip" aria-label="台股市場總覽">
+        <div>
+          <span class="eyebrow">TWSE SIM</span>
+          <h1>台股即時模擬交易台</h1>
+        </div>
+        <div class="market-card">
+          <span>加權指數</span>
+          <strong id="indexPrice">23,418.52</strong>
+          <small id="indexChange" class="up">+1.28%</small>
+        </div>
+        <div class="market-card mode-card">
+          <label>
+            行情模式
+            <select id="marketMode">
+              <option value="real">現實股市</option>
+              <option value="sim">模擬走勢</option>
+            </select>
+          </label>
+          <small id="modeHint">依 TWSE/TPEx 報價同步</small>
+        </div>
+        <div id="realChartCard" class="market-card mode-card">
+          <label>
+            現實圖表
+            <select id="realChartMode">
+              <option value="daily">日 K 圖</option>
+              <option value="intraday">當日行情 K</option>
+            </select>
+          </label>
+          <small id="realChartHint">歷史日 K</small>
+        </div>
+        <div id="simControlCard" class="market-card">
+          <span>模擬控制</span>
+          <button id="pauseSim" class="secondary-action" type="button">暫停模擬</button>
+          <small id="simStatus">模擬可操作</small>
+        </div>
+        <div class="market-card">
+          <span>同步成交量</span>
+          <strong id="marketVolume">6,980 億</strong>
+          <small id="marketStatus">等待同步</small>
+        </div>
+        <div class="market-card">
+          <span>目前時間</span>
+          <strong id="clock">09:00:00</strong>
+          <small>台北時間</small>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <aside class="watchlist" aria-label="台股清單">
+          <div class="panel-head">
+            <h2>股票池</h2>
+            <button id="shockButton" class="icon-button" title="觸發高量波動" aria-label="觸發高量波動">↯</button>
+          </div>
+          <label class="filter-label">
+            族群篩選
+            <select id="categoryFilter"></select>
+          </label>
+          <div id="stockList" class="stock-list"></div>
+        </aside>
+
+        <section class="chart-panel" aria-label="走勢圖">
+          <div class="panel-head chart-head">
+            <div>
+              <h2 id="activeName">台積電</h2>
+              <p id="activeMeta">2330 · 半導體 · 現股</p>
+            </div>
+            <div class="quote-box">
+              <strong id="activePrice">930.00</strong>
+              <span id="activeChange" class="up">+0.00%</span>
+            </div>
+          </div>
+          <div class="ma-controls" aria-label="均線開關">
+            <label><input class="ma-toggle" type="checkbox" value="5" checked />5MA</label>
+            <label><input class="ma-toggle" type="checkbox" value="10" checked />10MA</label>
+            <label><input class="ma-toggle" type="checkbox" value="20" />20MA</label>
+            <label><input class="ma-toggle" type="checkbox" value="60" />60MA</label>
+          </div>
+          <canvas id="priceChart" width="1120" height="560" aria-label="K 線與成交量圖"></canvas>
+          <div id="chartTooltip" class="chart-tooltip" hidden></div>
+        </section>
+
+        <aside class="trade-ticket" aria-label="下單區">
+          <div class="panel-head">
+            <h2>下單</h2>
+            <span id="buyingPower">可用資金 1,000,000</span>
+          </div>
+
+          <div class="segmented" role="group" aria-label="買賣方向">
+            <button id="buyTab" class="active" type="button">買進</button>
+            <button id="sellTab" type="button">賣出</button>
+          </div>
+
+          <label>
+            股票
+            <select id="symbolSelect"></select>
+          </label>
+
+          <label>
+            價格
+            <input id="orderPrice" type="number" min="1" step="0.5" />
+          </label>
+
+          <label>
+            張數
+            <input id="orderLots" type="number" min="1" step="1" value="1" />
+          </label>
+
+          <label>
+            委託類型
+            <select id="orderType">
+              <option value="market">市價</option>
+              <option value="limit">限價</option>
+            </select>
+          </label>
+
+          <button id="submitOrder" class="primary-action" type="button">送出買單</button>
+
+          <div class="summary-grid">
+            <div>
+              <span>持股市值</span>
+              <strong id="equityValue">0</strong>
+            </div>
+            <div>
+              <span>未實現損益</span>
+              <strong id="unrealizedPnl">0</strong>
+            </div>
+          </div>
+
+          <div class="log-panel">
+            <h3>成交紀錄</h3>
+            <ul id="tradeLog"></ul>
+          </div>
+        </aside>
+      </section>
+
+      <section class="news-panel" aria-label="新聞事件">
+        <div class="panel-head">
+          <div>
+            <h2>新聞事件</h2>
+            <p>新聞取自現實新聞 RSS，系統會依標題關鍵字與相關股票自動調整短線情緒。</p>
+          </div>
+          <button id="refreshNews" class="secondary-action" type="button">更新新聞</button>
+        </div>
+        <div id="newsList" class="news-list"></div>
+      </section>
+
+      <section class="positions-panel">
+        <div class="panel-head">
+          <h2>持倉</h2>
+          <span>含手續費 0.1425% 與證交稅 0.3%</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>股票</th>
+                <th>張數</th>
+                <th>均價</th>
+                <th>現價</th>
+                <th>市值</th>
+                <th>損益</th>
+              </tr>
+            </thead>
+            <tbody id="positionsBody">
+              <tr>
+                <td colspan="6" class="empty">尚無持倉</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>
