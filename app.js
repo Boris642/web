@@ -177,6 +177,13 @@ const newsTemplates = [
   }
 ];
 
+const timeframeOptions = [
+  { value: "1h", label: "1h", minutes: 60, source: "intraday" },
+  { value: "1d", label: "1D", tradingDays: 1, source: "daily" },
+  { value: "5d", label: "5D", tradingDays: 5, source: "daily" },
+  { value: "1m", label: "1M", tradingDays: 20, source: "daily" }
+];
+
 const state = {
   activeSymbol: "2330",
   side: "buy",
@@ -189,7 +196,12 @@ const state = {
   maVisible: { 5: true, 10: true, 20: false, 60: false },
   category: "all",
   mode: "real",
-  realChartMode: "daily",
+  chartTimeframe: "1h",
+  showPercentAxis: true,
+  orderUnit: "share",
+  viewports: {},
+  chartDragging: false,
+  dragAnchorX: 0,
   simPaused: false,
   news: [],
   realSync: false,
@@ -203,6 +215,7 @@ const state = {
 const $ = (id) => document.getElementById(id);
 const chart = $("priceChart");
 const tooltip = $("chartTooltip");
+const stage = $("chartStage");
 const ctx = chart.getContext("2d");
 let chartHoverData = null;
 const money = new Intl.NumberFormat("zh-TW", { maximumFractionDigits: 0 });
@@ -274,9 +287,15 @@ function modeKey(mode = state.mode) {
 
 function candlesFor(stock, mode = state.mode) {
   if (modeKey(mode) === "real") {
-    return state.realChartMode === "intraday" ? stock.realLiveCandles : stock.realCandles;
+    if (timeframeConfig().source === "daily") {
+      return aggregateDailyCandles(stock.realCandles || [], state.chartTimeframe);
+    }
+    return stock.realHourlyCandles || [];
   }
-  return stock.simCandles;
+  if (timeframeConfig().source === "daily") {
+    return aggregateDailyCandles(stock.simCandles || [], state.chartTimeframe);
+  }
+  return aggregateCandles(stock.simCandles || [], "1h", "sim");
 }
 
 function activeCandles(stock) {
@@ -301,6 +320,7 @@ function volumeFor(stock, mode = state.mode) {
 
 function buildCandles(stock) {
   const candles = [];
+  const now = Date.now();
   let price = stock.price * (0.985 + Math.random() * 0.03);
   for (let i = 0; i < 88; i += 1) {
     const pulse = Math.sin(i / 7) * stock.volatility * 0.9;
@@ -311,7 +331,11 @@ function buildCandles(stock) {
     const low = roundTick(Math.min(open, close) * (1 - Math.random() * stock.volatility * 1.6));
     const volumeBoost = 1.25 + Math.abs(move) * 92 + (i > 65 ? 0.35 : 0);
     const volume = Math.round(stock.baseVolume * volumeBoost * (0.75 + Math.random() * 0.7));
-    candles.push({ open, high, low, close, volume, time: `模擬 T-${87 - i}` });
+    const stamp = new Date(now - (87 - i) * 5 * 60 * 1000).toLocaleString("sv-SE", {
+      hour12: false,
+      timeZone: "Asia/Taipei"
+    }).replace(" ", " ");
+    candles.push({ open, high, low, close, volume, time: stamp.slice(0, 16) });
     price = close;
   }
   stock.simPrice = candles.at(-1).close;
@@ -321,9 +345,155 @@ function buildCandles(stock) {
   stock.realOpen = stock.price;
   stock.realCandles = [];
   stock.realLiveCandles = [];
+  stock.realHourlyCandles = [];
 }
 
 stocks.forEach(buildCandles);
+
+function timeframeConfig(value = state.chartTimeframe) {
+  return timeframeOptions.find((option) => option.value === value) || timeframeOptions.at(-1);
+}
+
+function defaultVisibleBars(timeframe = state.chartTimeframe) {
+  return {
+    "1h": 24,
+    "1d": 60,
+    "5d": 52,
+    "1m": 36
+  }[timeframe] || 28;
+}
+
+function viewportKey() {
+  return `${chartKey()}:viewport`;
+}
+
+function ensureViewport(totalCount) {
+  const key = viewportKey();
+  const existing = state.viewports[key];
+  const next = {
+    count: Math.min(totalCount, existing?.count || defaultVisibleBars()),
+    offset: existing?.offset || 0
+  };
+  next.count = Math.max(6, Math.min(totalCount, next.count || totalCount));
+  next.offset = Math.max(0, Math.min(next.offset, Math.max(0, totalCount - next.count)));
+  state.viewports[key] = next;
+  return next;
+}
+
+function visibleWindow(candles) {
+  const totalCount = candles.length;
+  const viewport = ensureViewport(totalCount);
+  const end = Math.max(viewport.count, totalCount - viewport.offset);
+  const start = Math.max(0, end - viewport.count);
+  return {
+    viewport,
+    start,
+    end,
+    candles: candles.slice(start, end)
+  };
+}
+
+function setViewportFromGesture(totalCount, nextCount, focusIndex = totalCount - 1) {
+  const key = viewportKey();
+  const current = ensureViewport(totalCount);
+  const count = Math.max(6, Math.min(totalCount, Math.round(nextCount)));
+  const currentEnd = totalCount - current.offset;
+  const currentStart = Math.max(0, currentEnd - current.count);
+  const focusRatio = current.count <= 1 ? 1 : (focusIndex - currentStart) / Math.max(1, current.count - 1);
+  const rawStart = Math.round(focusIndex - focusRatio * Math.max(1, count - 1));
+  const start = Math.max(0, Math.min(totalCount - count, rawStart));
+  state.viewports[key] = {
+    count,
+    offset: Math.max(0, totalCount - (start + count))
+  };
+}
+
+function panViewport(totalCount, barsDelta) {
+  const key = viewportKey();
+  const viewport = ensureViewport(totalCount);
+  const maxOffset = Math.max(0, totalCount - viewport.count);
+  viewport.offset = Math.max(0, Math.min(maxOffset, viewport.offset + barsDelta));
+  state.viewports[key] = viewport;
+}
+
+function aggregateCandles(candles, timeframe, mode = state.mode) {
+  if (!Array.isArray(candles) || candles.length === 0) return candles || [];
+  const { minutes, source, tradingDays } = timeframeConfig(timeframe);
+  if (source === "daily") return aggregateDailyCandles(candles, timeframe);
+  if (!minutes) return candles;
+  if (mode === "real") return aggregateIntradayCandles(candles, minutes);
+  return aggregateSequentialCandles(candles, Math.max(1, Math.round(minutes / 5)));
+}
+
+function aggregateDailyCandles(candles, timeframe) {
+  if (timeframe === "1m") return aggregateMonthlyCandles(candles);
+  const { tradingDays } = timeframeConfig(timeframe);
+  if (!tradingDays || tradingDays <= 1) return candles;
+  return aggregateSequentialCandles(candles, tradingDays);
+}
+
+function aggregateMonthlyCandles(candles) {
+  const buckets = new Map();
+  candles.forEach((candle) => {
+    const key = String(candle.time || "").slice(0, 7);
+    const existing = buckets.get(key);
+    if (!existing) {
+      buckets.set(key, { ...candle });
+      return;
+    }
+    existing.high = Math.max(existing.high, candle.high);
+    existing.low = Math.min(existing.low, candle.low);
+    existing.close = candle.close;
+    existing.volume = (existing.volume || 0) + (candle.volume || 0);
+    existing.time = candle.time;
+  });
+  return [...buckets.values()];
+}
+
+function aggregateSequentialCandles(candles, groupSize) {
+  const result = [];
+  for (let i = 0; i < candles.length; i += groupSize) {
+    const chunk = candles.slice(i, i + groupSize);
+    if (chunk.length === 0) continue;
+    result.push({
+      time: chunk.at(-1).time,
+      open: chunk[0].open,
+      high: Math.max(...chunk.map((candle) => candle.high)),
+      low: Math.min(...chunk.map((candle) => candle.low)),
+      close: chunk.at(-1).close,
+      volume: chunk.reduce((sum, candle) => sum + (candle.volume || 0), 0)
+    });
+  }
+  return result;
+}
+
+function aggregateIntradayCandles(candles, intervalMinutes) {
+  const byBucket = new Map();
+  candles.forEach((candle) => {
+    const minute = minuteOfDayFromCandle(candle);
+    const bucket = Math.floor((minute - 9 * 60) / intervalMinutes);
+    const existing = byBucket.get(bucket);
+    if (!existing) {
+      byBucket.set(bucket, {
+        time: String(candle.time).slice(0, 16),
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume || 0
+      });
+      return;
+    }
+    existing.high = Math.max(existing.high, candle.high);
+    existing.low = Math.min(existing.low, candle.low);
+    existing.close = candle.close;
+    existing.volume += candle.volume || 0;
+    existing.time = String(candle.time).slice(0, 16);
+  });
+  return [...byBucket.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, candle]) => candle);
+}
 
 function tickMarket() {
   if (state.mode === "real") {
@@ -346,7 +516,14 @@ function tickMarket() {
     const low = roundTick(clampToLimit(stock, Math.min(open, close) * (1 - Math.random() * stock.volatility)));
     const newsVolume = stock.newsVolume || 1;
     const volume = Math.round(stock.baseVolume * state.shock * state.marketVolumeBoost * newsVolume * (1.1 + Math.abs(pressure) * 130 + Math.random()));
-    candles.push({ open, high, low, close, volume, time: new Date().toLocaleTimeString("zh-TW", { hour12: false }) });
+    candles.push({
+      open,
+      high,
+      low,
+      close,
+      volume,
+      time: new Date().toLocaleString("sv-SE", { hour12: false, timeZone: "Asia/Taipei" }).slice(0, 16)
+    });
     stock.simCandles = candles.slice(-88);
     stock.simPrice = close;
     stock.newsImpulse = newsImpulse * 0.72;
@@ -425,9 +602,6 @@ function renderHeader() {
   $("modeHint").textContent = state.mode === "real"
     ? "依 TWSE/TPEx 報價同步"
     : "使用新聞與隨機波動推進";
-  $("realChartHint").textContent = state.realChartMode === "daily" ? "歷史日 K" : "當日即時 K";
-  $("realChartMode").disabled = state.mode !== "real";
-  $("realChartCard").hidden = state.mode !== "real";
   $("simControlCard").hidden = state.mode !== "sim";
   $("pauseSim").textContent = state.simPaused ? "繼續模擬" : "暫停模擬";
   $("simStatus").textContent = state.simPaused ? "模擬已暫停" : "每 5 秒更新一根";
@@ -441,24 +615,24 @@ function renderHeader() {
     $("orderPrice").value = priceFor(stock);
   }
   $("buyingPower").textContent = `可用資金 ${money.format(state.cash)}`;
+  $("togglePercent").classList.toggle("active", state.showPercentAxis);
+  $("togglePercent").setAttribute("aria-pressed", String(state.showPercentAxis));
+  renderOrderPreview();
 }
 
 function drawChart() {
   const stock = activeStock();
-  const candles = activeCandles(stock);
-  const dpr = window.devicePixelRatio || 1;
-  const rect = chart.getBoundingClientRect();
-  chart.width = Math.floor(rect.width * dpr);
-  chart.height = Math.floor(rect.height * dpr);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const allCandles = activeCandles(stock);
+  const rect = stage.getBoundingClientRect();
+  resizeCanvas(chart, ctx, rect);
   ctx.clearRect(0, 0, rect.width, rect.height);
 
-  if (!candles || candles.length === 0) {
+  if (!allCandles || allCandles.length === 0) {
     chartHoverData = null;
     ctx.fillStyle = "#7d8a93";
     ctx.font = "15px Microsoft JhengHei, Arial";
-    const message = state.mode === "real" && state.realChartMode === "intraday"
-      ? "當日行情 K 尚無資料，開盤同步後會開始累積"
+    const message = state.mode === "real" && timeframeConfig().source === "intraday"
+      ? "當日分 K 尚無資料，開盤同步後會開始累積"
       : state.mode === "real"
         ? "正在載入現實股市日 K..."
         : "尚無 K 線資料";
@@ -466,16 +640,14 @@ function drawChart() {
     return;
   }
 
-  if (state.mode === "real" && state.realChartMode === "intraday") {
-    drawIntradayLineChart(stock, candles, rect);
-    return;
-  }
+  const windowed = visibleWindow(allCandles);
+  const candles = windowed.candles;
 
-  const pad = { left: 54, right: 18, top: 24, bottom: 34 };
+  const pad = { left: 58, right: 74, top: 24, bottom: 36 };
   const volumeHeight = Math.max(92, rect.height * 0.22);
   const priceBottom = rect.height - pad.bottom - volumeHeight - 18;
   const chartWidth = rect.width - pad.left - pad.right;
-  const candleWidth = chartWidth / candles.length;
+  const candleWidth = chartWidth / Math.max(candles.length, 1);
   const maSeries = buildVisibleMaSeries(candles);
   const highs = candles.map((c) => c.high);
   const lows = candles.map((c) => c.low);
@@ -483,7 +655,22 @@ function drawChart() {
   const maxPrice = Math.max(...highs, ...maValues);
   const minPrice = Math.min(...lows, ...maValues);
   const maxVolume = Math.max(...candles.map((c) => c.volume));
-  chartHoverData = { candles, pad, candleWidth, rectWidth: rect.width, rectHeight: rect.height };
+  const baseline = baselinePriceForChart(stock, candles);
+  chartHoverData = {
+    type: "candles",
+    allCandles,
+    candles,
+    pad,
+    candleWidth,
+    startIndex: windowed.start,
+    endIndex: windowed.end,
+    rectWidth: rect.width,
+    rectHeight: rect.height,
+    priceBottom,
+    minPrice,
+    maxPrice,
+    baseline
+  };
 
   ctx.strokeStyle = "#202a31";
   ctx.lineWidth = 1;
@@ -497,6 +684,12 @@ function drawChart() {
     ctx.lineTo(rect.width - pad.right, y);
     ctx.stroke();
     ctx.fillText(priceFmt.format(price), 8, y + 4);
+    if (state.showPercentAxis) {
+      const pct = ((price - baseline) / baseline) * 100;
+      ctx.textAlign = "right";
+      ctx.fillText(formatSignedPct(pct), rect.width - 10, y + 4);
+      ctx.textAlign = "left";
+    }
   }
 
   candles.forEach((candle, index) => {
@@ -550,6 +743,14 @@ function drawChart() {
   ctx.fillStyle = "#7d8a93";
   ctx.fillText("成交量", pad.left, rect.height - volumeHeight - 12);
   ctx.fillText(`${money.format(maxVolume)} 張`, 8, rect.height - volumeHeight + 10);
+  drawTimeLabels(candles, pad, rect, candleWidth);
+}
+
+function resizeCanvas(canvas, context, rect) {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.floor(rect.width * dpr);
+  canvas.height = Math.floor(rect.height * dpr);
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
 function buildVisibleMaSeries(candles) {
@@ -619,106 +820,24 @@ function compactFlatIntraday(candles) {
   });
 }
 
-function drawIntradayLineChart(stock, candles, rect) {
-  candles = compactFlatIntraday(normalizeIntradayCandles(candles));
-  const pad = { left: 62, right: 72, top: 24, bottom: 42 };
-  const startMinute = 9 * 60;
-  const endMinute = 13 * 60 + 30;
-  const chartWidth = rect.width - pad.left - pad.right;
-  const chartHeight = rect.height - pad.top - pad.bottom;
-  const previousClose = stock.realQuote?.previousClose || openFor(stock, "real") || candles[0].open;
-  const prices = candles.map((candle) => candle.close);
-  const maxPrice = Math.max(...prices, previousClose);
-  const minPrice = Math.min(...prices, previousClose);
-  const padding = Math.max((maxPrice - minPrice) * 0.18, previousClose * 0.002);
-  const yMax = maxPrice + padding;
-  const yMin = minPrice - padding;
-  const lastPrice = prices.at(-1);
-  const lineColor = lastPrice >= previousClose ? "#ff4d5f" : "#20c997";
-
-  const pointFor = (candle) => {
-    const minute = Math.max(startMinute, Math.min(endMinute, minuteOfDayFromCandle(candle)));
-    const x = pad.left + ((minute - startMinute) / (endMinute - startMinute)) * chartWidth;
-    const y = scale(candle.close, yMin, yMax, rect.height - pad.bottom, pad.top);
-    return { x, y, candle, minute };
-  };
-  const points = candles.map(pointFor);
-
-  ctx.strokeStyle = "#202a31";
-  ctx.lineWidth = 1;
-  ctx.font = "12px Microsoft JhengHei, Arial";
-  ctx.fillStyle = "#7d8a93";
-  for (let i = 0; i <= 5; i += 1) {
-    const y = pad.top + (chartHeight * i) / 5;
-    const price = yMax - ((yMax - yMin) * i) / 5;
-    ctx.beginPath();
-    ctx.moveTo(pad.left, y);
-    ctx.lineTo(rect.width - pad.right, y);
-    ctx.stroke();
-    ctx.fillText(priceFmt.format(price), 8, y + 4);
-  }
-
-  const prevY = scale(previousClose, yMin, yMax, rect.height - pad.bottom, pad.top);
-  ctx.setLineDash([2, 5]);
-  ctx.strokeStyle = "#8b96a0";
-  ctx.beginPath();
-  ctx.moveTo(pad.left, prevY);
-  ctx.lineTo(rect.width - pad.right, prevY);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.fillStyle = "#8b96a0";
-  ctx.textAlign = "left";
-  ctx.fillText(`昨收 ${priceFmt.format(previousClose)}`, rect.width - pad.right - 2, prevY - 6);
-
-  if (points.length > 1) {
-    const gradient = ctx.createLinearGradient(0, pad.top, 0, rect.height - pad.bottom);
-    gradient.addColorStop(0, lineColor + "44");
-    gradient.addColorStop(1, lineColor + "00");
-    ctx.beginPath();
-    points.forEach((point, index) => {
-      if (index === 0) ctx.moveTo(point.x, point.y);
-      else ctx.lineTo(point.x, point.y);
-    });
-    ctx.lineTo(points.at(-1).x, rect.height - pad.bottom);
-    ctx.lineTo(points[0].x, rect.height - pad.bottom);
-    ctx.closePath();
-    ctx.fillStyle = gradient;
-    ctx.fill();
-  }
-
-  ctx.strokeStyle = lineColor;
-  ctx.lineWidth = 2.2;
-  ctx.beginPath();
-  points.forEach((point, index) => {
-    if (index === 0) ctx.moveTo(point.x, point.y);
-    else ctx.lineTo(point.x, point.y);
-  });
-  ctx.stroke();
-
-  const last = points.at(-1);
-  if (last) {
-    ctx.fillStyle = lineColor;
-    ctx.beginPath();
-    ctx.arc(last.x, last.y, 4, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  const labels = [
-    [9 * 60, "上午9:00"],
-    [10 * 60, "上午10:00"],
-    [11 * 60, "上午11:00"],
-    [12 * 60, "下午12:00"],
-    [13 * 60, "下午1:00"]
-  ];
+function drawTimeLabels(candles, pad, rect, candleWidth) {
+  const labelCount = Math.min(5, candles.length);
+  if (labelCount <= 0) return;
   ctx.fillStyle = "#7d8a93";
   ctx.textAlign = "center";
-  labels.forEach(([minute, label]) => {
-    const x = pad.left + ((minute - startMinute) / (endMinute - startMinute)) * chartWidth;
-    ctx.fillText(label, x, rect.height - 14);
-  });
+  for (let i = 0; i < labelCount; i += 1) {
+    const index = Math.min(candles.length - 1, Math.round((i * (candles.length - 1)) / Math.max(1, labelCount - 1)));
+    const x = pad.left + index * candleWidth + candleWidth / 2;
+    const timeLabel = formatAxisTime(candles[index].time);
+    ctx.fillText(timeLabel, x, rect.height - 12);
+  }
   ctx.textAlign = "left";
+}
 
-  chartHoverData = { type: "line", points, pad, rectWidth: rect.width, rectHeight: rect.height };
+function formatAxisTime(time) {
+  const text = String(time || "");
+  if (timeframeConfig().source === "daily") return text.slice(5, 10) || text;
+  return text.length >= 16 ? `${text.slice(5, 10)} ${text.slice(11, 16)}` : text.slice(-5) || text;
 }
 
 function showChartTooltip(event) {
@@ -726,44 +845,558 @@ function showChartTooltip(event) {
     tooltip.hidden = true;
     return;
   }
-  const { candles, points, pad, candleWidth, rectWidth, rectHeight, type } = chartHoverData;
-  const rect = chart.getBoundingClientRect();
-  const x = event.clientX - rect.left;
-  const y = event.clientY - rect.top;
-  if (x < pad.left || x > rectWidth - pad.right || y < pad.top || y > rectHeight - pad.bottom) {
+  const point = chartPointFromEvent(event);
+  if (!point) {
     tooltip.hidden = true;
     return;
   }
-  let html = "";
-  if (type === "line") {
-    const nearest = points.reduce((best, point) => (Math.abs(point.x - x) < Math.abs(best.x - x) ? point : best), points[0]);
-    const candle = nearest.candle;
-    html = `
-      <strong>${escapeHtml(candle.time || "")}</strong>
-      價格 ${priceFmt.format(candle.close)}<br>
-      量 ${money.format(candle.volume)} 張
-    `;
-  } else {
-    const index = Math.max(0, Math.min(candles.length - 1, Math.floor((x - pad.left) / candleWidth)));
-    const candle = candles[index];
-    html = `
-      <strong>${escapeHtml(candle.time || `第 ${index + 1} 根`)}</strong>
-      開 ${priceFmt.format(candle.open)}<br>
-      高 ${priceFmt.format(candle.high)}　低 ${priceFmt.format(candle.low)}<br>
-      收 ${priceFmt.format(candle.close)}<br>
-      量 ${money.format(candle.volume)} 張
-    `;
-  }
+  const { candles, rectWidth, baseline } = chartHoverData;
+  const rect = chart.getBoundingClientRect();
+  const localIndex = point.localIndex ?? (point.index - chartHoverData.startIndex);
+  const candle = candles[localIndex];
+  const pct = ((candle.close - baseline) / baseline) * 100;
+  let html = `
+    <strong>${escapeHtml(candle.time || `第 ${localIndex + 1} 根`)}</strong>
+    開 ${priceFmt.format(candle.open)}<br>
+    高 ${priceFmt.format(candle.high)}　低 ${priceFmt.format(candle.low)}<br>
+    收 ${priceFmt.format(candle.close)} · ${formatSignedPct(pct)}<br>
+    量 ${money.format(candle.volume)} 張
+  `;
   tooltip.innerHTML = html;
-  const tooltipX = Math.min(rect.width - 188, Math.max(10, x + 14));
-  const tooltipY = Math.min(rect.height - 126, Math.max(10, y + 14));
-  tooltip.style.left = `${chart.offsetLeft + tooltipX}px`;
-  tooltip.style.top = `${chart.offsetTop + tooltipY}px`;
+  const tooltipX = Math.min(rect.width - 188, Math.max(10, point.x + 14));
+  const tooltipY = Math.min(rect.height - 126, Math.max(10, point.y + 14));
+  tooltip.style.left = `${tooltipX}px`;
+  tooltip.style.top = `${tooltipY}px`;
   tooltip.hidden = false;
 }
 
 function hideChartTooltip() {
   tooltip.hidden = true;
+}
+
+function baselinePriceForChart(stock, candles) {
+  if (state.mode === "real") {
+    if (timeframeConfig().source === "daily") {
+      return stock.realQuote?.previousClose || candles[0]?.open || priceFor(stock);
+    }
+    return stock.realQuote?.previousClose || candles[0]?.open || priceFor(stock);
+  }
+  return candles[0]?.open || priceFor(stock);
+}
+
+function chartKey() {
+  return `${state.activeSymbol}:${state.mode}:${state.chartTimeframe}`;
+}
+
+function drawingsForActiveChart() {
+  const key = chartKey();
+  if (!state.drawings[key]) state.drawings[key] = [];
+  return state.drawings[key];
+}
+
+function nextDrawingId() {
+  return `draw-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function activeDrawing() {
+  return drawingsForActiveChart().find((drawing) => drawing.id === state.selectedDrawingId) || null;
+}
+
+function clearSelection() {
+  state.selectedDrawingId = null;
+}
+
+function normalizeDrawPoint(point) {
+  if (!point) return null;
+  return { index: point.index, price: Math.round(point.price * 100) / 100 };
+}
+
+function screenPointFor(drawPoint) {
+  if (!chartHoverData || !drawPoint) return null;
+  const { candles, pad, candleWidth, priceBottom, minPrice, maxPrice, startIndex } = chartHoverData;
+  const localIndex = drawPoint.index - startIndex;
+  if (localIndex < -1 || localIndex > candles.length) return null;
+  return {
+    x: pad.left + localIndex * candleWidth + candleWidth / 2,
+    y: scale(drawPoint.price, minPrice, maxPrice, priceBottom, pad.top)
+  };
+}
+
+function chartPointFromEvent(event, allowOutside = false) {
+  if (!chartHoverData) return null;
+  const rect = chart.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  const plotX = x;
+  const plotY = y;
+  const { candles, pad, candleWidth, rectWidth, rectHeight, priceBottom, minPrice, maxPrice, startIndex } = chartHoverData;
+  if (!allowOutside && (plotX < pad.left || plotX > rectWidth - pad.right || plotY < pad.top || plotY > priceBottom)) return null;
+  const clampedX = Math.max(pad.left, Math.min(rectWidth - pad.right, plotX));
+  const clampedY = Math.max(pad.top, Math.min(priceBottom, plotY));
+  const localIndex = Math.max(0, Math.min(candles.length - 1, Math.round((clampedX - pad.left - candleWidth / 2) / candleWidth)));
+  return {
+    x: clampedX,
+    y: clampedY,
+    rawX: plotX,
+    rawY: plotY,
+    snappedX: pad.left + localIndex * candleWidth + candleWidth / 2,
+    index: startIndex + localIndex,
+    localIndex,
+    price: unscale(clampedY, minPrice, maxPrice, priceBottom, pad.top)
+  };
+}
+
+function setChartTimeframe(timeframe) {
+  state.chartTimeframe = timeframe;
+  const stock = activeStock();
+  if (state.mode === "real") {
+    if (timeframeConfig(timeframe).source === "daily") loadRealHistory(stock, true);
+    else loadRealHourly(stock, true);
+    syncMarket();
+  }
+  renderChartControls();
+  renderAll();
+}
+
+function renderChartControls() {
+  document.querySelectorAll(".timeframe-button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.timeframe === state.chartTimeframe);
+  });
+  chart.style.cursor = state.chartDragging ? "grabbing" : "grab";
+}
+
+function drawOverlay() {
+  const rect = stage.getBoundingClientRect();
+  overlayCtx.clearRect(0, 0, rect.width, rect.height);
+  if (!chartHoverData) return;
+
+  const drawings = drawingsForActiveChart();
+  drawings.forEach((drawing) => paintDrawing(drawing, false, drawing.id === state.selectedDrawingId));
+  if (state.drawingDraft) paintDrawing(state.drawingDraft, true);
+
+  if (state.pointer) {
+    const { x, y, localIndex } = state.pointer;
+    const candle = chartHoverData.candles[localIndex];
+    overlayCtx.strokeStyle = "rgba(102, 166, 255, 0.4)";
+    overlayCtx.lineWidth = 1;
+    overlayCtx.setLineDash([4, 5]);
+    overlayCtx.beginPath();
+    overlayCtx.moveTo(x, chartHoverData.pad.top);
+    overlayCtx.lineTo(x, chartHoverData.priceBottom);
+    overlayCtx.moveTo(chartHoverData.pad.left, y);
+    overlayCtx.lineTo(chartHoverData.rectWidth - chartHoverData.pad.right, y);
+    overlayCtx.stroke();
+    overlayCtx.setLineDash([]);
+    if (candle) {
+      overlayCtx.fillStyle = "#0f1720";
+      overlayCtx.strokeStyle = "#334252";
+      overlayCtx.lineWidth = 1;
+      overlayCtx.fillRect(x - 34, chartHoverData.priceBottom + 8, 68, 20);
+      overlayCtx.strokeRect(x - 34, chartHoverData.priceBottom + 8, 68, 20);
+      overlayCtx.fillStyle = "#d6dde2";
+      overlayCtx.font = "11px Microsoft JhengHei, Arial";
+      overlayCtx.textAlign = "center";
+      overlayCtx.fillText(formatAxisTime(candle.time), x, chartHoverData.priceBottom + 22);
+      overlayCtx.textAlign = "left";
+    }
+  }
+}
+
+function paintDrawing(drawing, isDraft, isSelected = false) {
+  const start = screenPointFor(drawing.start);
+  if (!start) return;
+  const end = screenPointFor(drawing.end || drawing.start) || start;
+  const accent = isSelected ? "rgba(255, 209, 102, 1)" : "rgba(102, 166, 255, 0.95)";
+  const color = isDraft ? "rgba(242, 184, 75, 0.9)" : accent;
+
+  overlayCtx.save();
+  overlayCtx.strokeStyle = color;
+  overlayCtx.fillStyle = color;
+  overlayCtx.lineWidth = drawing.type === "horizontal" ? 1.4 : 1.8;
+
+  if (drawing.type === "trendline" || drawing.type === "arrow") {
+    overlayCtx.beginPath();
+    overlayCtx.moveTo(start.x, start.y);
+    overlayCtx.lineTo(end.x, end.y);
+    overlayCtx.stroke();
+    if (drawing.type === "arrow") drawArrowHead(start, end, color);
+  } else if (drawing.type === "horizontal") {
+    overlayCtx.beginPath();
+    overlayCtx.moveTo(chartHoverData.pad.left, start.y);
+    overlayCtx.lineTo(chartHoverData.rectWidth - chartHoverData.pad.right, start.y);
+    overlayCtx.stroke();
+  } else if (drawing.type === "rectangle") {
+    const left = Math.min(start.x, end.x);
+    const top = Math.min(start.y, end.y);
+    const width = Math.abs(start.x - end.x);
+    const height = Math.abs(start.y - end.y);
+    overlayCtx.fillStyle = isDraft ? "rgba(242, 184, 75, 0.12)" : "rgba(102, 166, 255, 0.12)";
+    overlayCtx.fillRect(left, top, width, height);
+    overlayCtx.strokeRect(left, top, width, height);
+  } else if (drawing.type === "channel") {
+    const offset = screenOffsetForPriceDelta(drawing.offsetPrice || 0);
+    overlayCtx.beginPath();
+    overlayCtx.moveTo(start.x, start.y);
+    overlayCtx.lineTo(end.x, end.y);
+    overlayCtx.moveTo(start.x, start.y + offset);
+    overlayCtx.lineTo(end.x, end.y + offset);
+    overlayCtx.stroke();
+    overlayCtx.globalAlpha = 0.1;
+    overlayCtx.beginPath();
+    overlayCtx.moveTo(start.x, start.y);
+    overlayCtx.lineTo(end.x, end.y);
+    overlayCtx.lineTo(end.x, end.y + offset);
+    overlayCtx.lineTo(start.x, start.y + offset);
+    overlayCtx.closePath();
+    overlayCtx.fill();
+    overlayCtx.globalAlpha = 1;
+  } else if (drawing.type === "fib") {
+    const levels = [0, 0.236, 0.382, 0.5, 0.618, 1];
+    const left = Math.min(start.x, end.x);
+    const right = Math.max(start.x, end.x);
+    levels.forEach((level) => {
+      const y = start.y + (end.y - start.y) * level;
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(left, y);
+      overlayCtx.lineTo(right, y);
+      overlayCtx.stroke();
+      overlayCtx.fillStyle = "#d6dde2";
+      overlayCtx.font = "11px Microsoft JhengHei, Arial";
+      overlayCtx.fillText(`${Math.round(level * 100)}%`, right + 6, y + 3);
+    });
+  } else if (drawing.type === "text") {
+    overlayCtx.font = "13px Microsoft JhengHei, Arial";
+    const label = drawing.text || "文字";
+    const metrics = overlayCtx.measureText(label);
+    const width = metrics.width + 14;
+    overlayCtx.fillStyle = isSelected ? "rgba(255, 209, 102, 0.14)" : "rgba(17, 22, 26, 0.82)";
+    overlayCtx.strokeRect(start.x - 8, start.y - 18, width, 26);
+    overlayCtx.fillRect(start.x - 8, start.y - 18, width, 26);
+    overlayCtx.fillStyle = "#edf2f5";
+    overlayCtx.fillText(label, start.x, start.y);
+  }
+
+  if (isSelected || isDraft) {
+    drawingHandles(drawing).forEach((handle) => {
+      const point = screenPointFor(handle.point);
+      if (!point) return;
+      overlayCtx.fillStyle = "#0d1114";
+      overlayCtx.strokeStyle = color;
+      overlayCtx.lineWidth = 1.4;
+      overlayCtx.beginPath();
+      overlayCtx.rect(point.x - 4, point.y - 4, 8, 8);
+      overlayCtx.fill();
+      overlayCtx.stroke();
+    });
+  }
+  overlayCtx.restore();
+}
+
+function drawArrowHead(start, end, color) {
+  const angle = Math.atan2(end.y - start.y, end.x - start.x);
+  const size = 10;
+  overlayCtx.fillStyle = color;
+  overlayCtx.beginPath();
+  overlayCtx.moveTo(end.x, end.y);
+  overlayCtx.lineTo(end.x - size * Math.cos(angle - Math.PI / 6), end.y - size * Math.sin(angle - Math.PI / 6));
+  overlayCtx.lineTo(end.x - size * Math.cos(angle + Math.PI / 6), end.y - size * Math.sin(angle + Math.PI / 6));
+  overlayCtx.closePath();
+  overlayCtx.fill();
+}
+
+function screenOffsetForPriceDelta(delta) {
+  if (!chartHoverData) return 0;
+  const a = scale(chartHoverData.minPrice, chartHoverData.minPrice, chartHoverData.maxPrice, chartHoverData.priceBottom, chartHoverData.pad.top);
+  const b = scale(chartHoverData.minPrice + delta, chartHoverData.minPrice, chartHoverData.maxPrice, chartHoverData.priceBottom, chartHoverData.pad.top);
+  return b - a;
+}
+
+function drawingHandles(drawing) {
+  if (drawing.type === "horizontal" || drawing.type === "text") return [{ role: "start", point: drawing.start }];
+  const handles = [{ role: "start", point: drawing.start }];
+  if (drawing.end) handles.push({ role: "end", point: drawing.end });
+  if (drawing.type === "channel") {
+    handles.push({
+      role: "offset",
+      point: {
+        index: drawing.end.index,
+        price: drawing.end.price + (drawing.offsetPrice || 0)
+      }
+    });
+  }
+  return handles;
+}
+
+function drawingBounds(drawing) {
+  const points = drawingHandles(drawing).map((handle) => screenPointFor(handle.point)).filter(Boolean);
+  if (points.length === 0) return null;
+  return {
+    left: Math.min(...points.map((point) => point.x)),
+    right: Math.max(...points.map((point) => point.x)),
+    top: Math.min(...points.map((point) => point.y)),
+    bottom: Math.max(...points.map((point) => point.y))
+  };
+}
+
+function pickDrawingAtPoint(point) {
+  const drawings = drawingsForActiveChart();
+  let best = null;
+  for (let i = drawings.length - 1; i >= 0; i -= 1) {
+    const drawing = drawings[i];
+    const handle = drawingHandles(drawing).find((entry) => {
+      const screen = screenPointFor(entry.point);
+      return screen && distanceBetween(screen, point) <= 10;
+    });
+    if (handle) return { drawing, handle: handle.role, distance: 0 };
+    const distance = distanceToDrawing(drawing, point);
+    if (distance <= 14 && (!best || distance < best.distance)) {
+      best = { drawing, handle: null, distance };
+    }
+  }
+  return best;
+}
+
+function distanceToDrawing(drawing, point) {
+  const start = screenPointFor(drawing.start);
+  const end = screenPointFor(drawing.end || drawing.start) || start;
+  if (!start || !end) return Number.POSITIVE_INFINITY;
+  if (drawing.type === "horizontal") {
+    return Math.abs(point.y - start.y);
+  }
+  if (drawing.type === "trendline" || drawing.type === "arrow" || drawing.type === "fib") {
+    return pointToSegmentDistance(point, start, end);
+  }
+  if (drawing.type === "channel") {
+    const offset = screenOffsetForPriceDelta(drawing.offsetPrice || 0);
+    const lowerStart = { x: start.x, y: start.y + offset };
+    const lowerEnd = { x: end.x, y: end.y + offset };
+    return Math.min(pointToSegmentDistance(point, start, end), pointToSegmentDistance(point, lowerStart, lowerEnd));
+  }
+  if (drawing.type === "rectangle" || drawing.type === "text") {
+    const bounds = drawingBounds(drawing);
+    if (!bounds) return Number.POSITIVE_INFINITY;
+    const dx = point.x < bounds.left ? bounds.left - point.x : point.x > bounds.right ? point.x - bounds.right : 0;
+    const dy = point.y < bounds.top ? bounds.top - point.y : point.y > bounds.bottom ? point.y - bounds.bottom : 0;
+    return Math.hypot(dx, dy);
+  }
+  return Math.min(distanceBetween(start, point), distanceBetween(end, point));
+}
+
+function pointToSegmentDistance(point, start, end) {
+  const lengthSq = (end.x - start.x) ** 2 + (end.y - start.y) ** 2;
+  if (lengthSq === 0) return distanceBetween(point, start);
+  const t = Math.max(0, Math.min(1, ((point.x - start.x) * (end.x - start.x) + (point.y - start.y) * (end.y - start.y)) / lengthSq));
+  return distanceBetween(point, {
+    x: start.x + t * (end.x - start.x),
+    y: start.y + t * (end.y - start.y)
+  });
+}
+
+function startInteraction(kind, payload = {}) {
+  state.interaction = { kind, ...payload };
+}
+
+function stopInteraction() {
+  state.interaction = null;
+}
+
+function clonePoint(point) {
+  return point ? { ...point } : null;
+}
+
+function moveDrawingBy(drawing, deltaIndex, deltaPrice) {
+  drawing.start.index += deltaIndex;
+  drawing.start.price += deltaPrice;
+  if (drawing.end) {
+    drawing.end.index += deltaIndex;
+    drawing.end.price += deltaPrice;
+  }
+}
+
+function onChartPointerDown(event) {
+  const point = chartPointFromEvent(event, true);
+  if (!point) return;
+  state.pointer = point;
+
+  if (state.chartTool === "cursor") {
+    const hit = pickDrawingAtPoint(point);
+    if (hit) {
+      state.selectedDrawingId = hit.drawing.id;
+      if (hit.handle) {
+        startInteraction("resize-drawing", {
+          drawingId: hit.drawing.id,
+          handle: hit.handle
+        });
+      } else {
+        startInteraction("move-drawing", {
+          drawingId: hit.drawing.id,
+          anchor: clonePoint(point),
+          snapshot: structuredClone(hit.drawing)
+        });
+      }
+    } else {
+      clearSelection();
+      startInteraction("pan-chart", { anchorX: point.rawX });
+    }
+    drawOverlay();
+    return;
+  }
+
+  if (state.chartTool === "eraser") {
+    removeNearestDrawing(point);
+    drawOverlay();
+    return;
+  }
+
+  if (state.chartTool === "horizontal") {
+    const drawing = { id: nextDrawingId(), type: "horizontal", start: normalizeDrawPoint(point) };
+    drawingsForActiveChart().push(drawing);
+    state.selectedDrawingId = drawing.id;
+    drawOverlay();
+    return;
+  }
+
+  if (state.chartTool === "text") {
+    const text = window.prompt("輸入標註文字");
+    if (!text) return;
+    const drawing = { id: nextDrawingId(), type: "text", start: normalizeDrawPoint(point), text };
+    drawingsForActiveChart().push(drawing);
+    state.selectedDrawingId = drawing.id;
+    drawOverlay();
+    return;
+  }
+
+  state.drawingDraft = {
+    id: nextDrawingId(),
+    type: state.chartTool,
+    start: normalizeDrawPoint(point),
+    end: normalizeDrawPoint(point),
+    offsetPrice: 0
+  };
+  startInteraction("draw", { tool: state.chartTool });
+  drawOverlay();
+}
+
+function onChartPointerMove(event) {
+  if (!state.interaction && event.target !== drawingCanvas) return;
+  const interaction = state.interaction;
+  const point = chartPointFromEvent(event, Boolean(interaction));
+  if (!interaction) showChartTooltip(event);
+  if (!point) return;
+  state.pointer = point;
+  if (interaction?.kind === "pan-chart") {
+    const deltaBars = Math.round((interaction.anchorX - point.rawX) / Math.max(1, chartHoverData.candleWidth));
+    panViewport(chartHoverData.allCandles.length, deltaBars);
+    interaction.anchorX = point.rawX;
+    renderAll();
+    return;
+  }
+  if (interaction?.kind === "move-drawing") {
+    const drawing = activeDrawing();
+    const snapshot = interaction.snapshot;
+    if (drawing && snapshot) {
+      drawing.start.index = snapshot.start.index + (point.index - interaction.anchor.index);
+      drawing.start.price = snapshot.start.price + (point.price - interaction.anchor.price);
+      if (drawing.end && snapshot.end) {
+        drawing.end.index = snapshot.end.index + (point.index - interaction.anchor.index);
+        drawing.end.price = snapshot.end.price + (point.price - interaction.anchor.price);
+      }
+    }
+  } else if (interaction?.kind === "resize-drawing") {
+    const drawing = activeDrawing();
+    if (drawing) {
+      if (interaction.handle === "offset") {
+        drawing.offsetPrice = point.price - drawing.end.price;
+      } else {
+        drawing[interaction.handle] = normalizeDrawPoint(point);
+      }
+    }
+  } else if (state.drawingDraft) {
+    state.drawingDraft.end = normalizeDrawPoint(point);
+    if (state.drawingDraft.type === "channel") {
+      state.drawingDraft.offsetPrice = point.price - state.drawingDraft.start.price;
+    }
+  }
+  drawOverlay();
+}
+
+function onChartPointerUp(event) {
+  const point = chartPointFromEvent(event, true) || state.pointer;
+  if (state.drawingDraft && point) {
+    state.drawingDraft.end = normalizeDrawPoint(point);
+    const completed = structuredClone(state.drawingDraft);
+    if (Math.abs(completed.end.index - completed.start.index) > 0 || Math.abs(completed.end.price - completed.start.price) > 0.01) {
+      drawingsForActiveChart().push(completed);
+      state.selectedDrawingId = completed.id;
+    }
+  }
+  state.drawingDraft = null;
+  stopInteraction();
+  drawOverlay();
+}
+
+function removeNearestDrawing(point) {
+  const drawings = drawingsForActiveChart();
+  if (drawings.length === 0) return;
+  let bestIndex = -1;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  drawings.forEach((drawing, index) => {
+    const start = screenPointFor(drawing.start);
+    const end = screenPointFor(drawing.end || drawing.start) || start;
+    const distance = Math.min(distanceBetween(start, point), distanceBetween(end, point));
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  });
+  if (bestIndex >= 0 && bestDistance < 40) {
+    const [removed] = drawings.splice(bestIndex, 1);
+    if (removed?.id === state.selectedDrawingId) clearSelection();
+  }
+}
+
+function distanceBetween(a, b) {
+  return Math.hypot((a.x || 0) - (b.x || 0), (a.y || 0) - (b.y || 0));
+}
+
+function onChartDragStart(event) {
+  const point = chartPointFromEvent(event, true);
+  if (!point) return;
+  state.chartDragging = true;
+  state.dragAnchorX = point.rawX;
+  renderChartControls();
+}
+
+function onChartDragMove(event) {
+  if (state.chartDragging && chartHoverData) {
+    const point = chartPointFromEvent(event, true);
+    if (!point) return;
+    const deltaBars = Math.round((state.dragAnchorX - point.rawX) / Math.max(1, chartHoverData.candleWidth));
+    panViewport(chartHoverData.allCandles.length, deltaBars);
+    state.dragAnchorX = point.rawX;
+    renderAll();
+    return;
+  }
+  showChartTooltip(event);
+}
+
+function onChartDragEnd() {
+  state.chartDragging = false;
+  renderChartControls();
+}
+
+function onChartWheel(event) {
+  if (!chartHoverData) return;
+  event.preventDefault();
+  const point = chartPointFromEvent(event) || { index: chartHoverData.endIndex - 1 };
+  const nextCount = event.deltaY > 0
+    ? chartHoverData.candles.length + 4
+    : chartHoverData.candles.length - 4;
+  setViewportFromGesture(chartHoverData.allCandles.length, nextCount, point.index);
+  renderAll();
+}
+
+function onKeyDown(event) {
 }
 
 function marketStatusText() {
@@ -781,13 +1414,20 @@ function scale(value, min, max, outMin, outMax) {
   return outMin - ((value - min) / (max - min)) * (outMin - outMax);
 }
 
+function unscale(value, min, max, outMin, outMax) {
+  if (outMin === outMax) return min;
+  const ratio = (outMin - value) / (outMin - outMax);
+  return min + (max - min) * ratio;
+}
+
 function selectStock(symbol) {
   state.activeSymbol = symbol;
   $("symbolSelect").value = symbol;
   if (state.mode === "real") {
-    if (state.realChartMode === "intraday") loadRealIntraday(activeStock(), true);
-    else loadRealHistory(activeStock());
+    if (timeframeConfig().source === "daily") loadRealHistory(activeStock());
+    else loadRealHourly(activeStock(), true);
   }
+  renderOrderPreview();
   renderAll();
 }
 
@@ -797,43 +1437,90 @@ function setSide(side) {
   $("sellTab").classList.toggle("active", side === "sell");
   $("submitOrder").textContent = side === "buy" ? "送出買單" : "送出賣單";
   $("submitOrder").classList.toggle("sell", side === "sell");
+  renderOrderPreview();
+}
+
+function sharesFromOrderInput() {
+  const quantity = Math.max(1, Number($("orderLots").value) || 1);
+  return state.orderUnit === "lot"
+    ? Math.max(1, Math.floor(quantity)) * 1000
+    : Math.max(1, Math.floor(quantity));
+}
+
+function formatOrderQuantity(shares) {
+  if (state.orderUnit === "lot") {
+    return `${Math.floor(shares / 1000)} 張`;
+  }
+  return `${money.format(shares)} 股`;
+}
+
+function setOrderUnit(unit) {
+  state.orderUnit = unit;
+  $("orderUnit").value = unit;
+  $("orderQuantityLabel").textContent = unit === "lot" ? "張數" : "股數";
+  $("orderLots").step = "1";
+  $("orderLots").min = "1";
+  if (!Number($("orderLots").value) || Number($("orderLots").value) < 1) {
+    $("orderLots").value = "1";
+  }
+  renderOrderPreview();
+}
+
+function renderOrderPreview() {
+  const stock = stocks.find((item) => item.symbol === $("symbolSelect").value) || activeStock();
+  if (!stock) return;
+  const shares = sharesFromOrderInput();
+  const currentPrice = priceFor(stock);
+  const orderType = $("orderType").value;
+  const requestedPrice = Number($("orderPrice").value) || currentPrice;
+  const fillPrice = orderType === "market" ? currentPrice : requestedPrice;
+  const value = fillPrice * shares;
+  const fee = Math.max(20, value * 0.001425);
+  const tax = state.side === "sell" ? value * 0.003 : 0;
+  const total = state.side === "buy" ? value + fee : value - fee - tax;
+
+  $("previewShares").textContent = `${money.format(shares)} 股`;
+  $("previewValue").textContent = money.format(value);
+  $("previewFee").textContent = money.format(fee);
+  $("previewTax").textContent = money.format(tax);
+  $("previewTotalLabel").textContent = state.side === "buy" ? "預估扣款" : "預估入帳";
+  $("previewTotal").textContent = money.format(total);
 }
 
 function submitOrder() {
   const stock = stocks.find((item) => item.symbol === $("symbolSelect").value);
-  const lots = Math.max(1, Math.floor(Number($("orderLots").value) || 1));
+  const shares = sharesFromOrderInput();
   const orderType = $("orderType").value;
   const currentPrice = priceFor(stock);
   const requestedPrice = Number($("orderPrice").value) || currentPrice;
   const fillPrice = orderType === "market" ? currentPrice : requestedPrice;
-  const shares = lots * 1000;
   const value = fillPrice * shares;
   const fee = Math.max(20, value * 0.001425);
   const tax = state.side === "sell" ? value * 0.003 : 0;
-  const pos = state.positions[stock.symbol] || { lots: 0, avg: 0 };
+  const pos = state.positions[stock.symbol] || { shares: 0, avg: 0 };
 
   if (state.side === "buy") {
     const total = value + fee;
     if (total > state.cash) {
-      addLog(`資金不足，${stock.name} ${lots} 張未成交`);
+      addLog(`資金不足，${stock.name} ${formatOrderQuantity(shares)}未成交`);
       return;
     }
-    const oldShares = pos.lots * 1000;
+    const oldShares = pos.shares;
     pos.avg = oldShares + shares > 0 ? (pos.avg * oldShares + value) / (oldShares + shares) : fillPrice;
-    pos.lots += lots;
+    pos.shares += shares;
     state.cash -= total;
     state.positions[stock.symbol] = pos;
   } else {
-    if (pos.lots < lots) {
-      addLog(`庫存不足，${stock.name} ${lots} 張未成交`);
+    if (pos.shares < shares) {
+      addLog(`庫存不足，${stock.name} ${formatOrderQuantity(shares)}未成交`);
       return;
     }
-    pos.lots -= lots;
+    pos.shares -= shares;
     state.cash += value - fee - tax;
-    if (pos.lots === 0) delete state.positions[stock.symbol];
+    if (pos.shares === 0) delete state.positions[stock.symbol];
   }
 
-  addLog(`${state.side === "buy" ? "買進" : "賣出"} ${stock.symbol} ${stock.name} ${lots} 張 @ ${priceFmt.format(fillPrice)}`);
+  addLog(`${state.side === "buy" ? "買進" : "賣出"} ${stock.symbol} ${stock.name} ${formatOrderQuantity(shares)} @ ${priceFmt.format(fillPrice)}`);
   state.activeSymbol = stock.symbol;
   renderAll();
 }
@@ -988,8 +1675,8 @@ async function syncMarket() {
       if (!active.historyLoaded || Date.now() - (active.historyLoadedAt || 0) > 10 * 60 * 1000) {
         loadRealHistory(active, true);
       }
-      if (state.realChartMode === "intraday" && (!active.intradayLoaded || Date.now() - (active.intradayLoadedAt || 0) > 30 * 1000)) {
-        loadRealIntraday(active, true);
+      if (timeframeConfig().source === "intraday" && (!active.hourlyLoaded || Date.now() - (active.hourlyLoadedAt || 0) > 5 * 60 * 1000)) {
+        loadRealHourly(active, true);
       }
     }
     renderAll();
@@ -1064,6 +1751,32 @@ async function loadRealIntraday(stock, force = false) {
     }
   } catch {
     addLog(`${stock.symbol} ${stock.name} 當日分時資料載入失敗，等待即時報價累積`);
+  }
+}
+
+async function loadRealHourly(stock, force = false) {
+  if (!stock || (stock.hourlyLoaded && !force && Date.now() - (stock.hourlyLoadedAt || 0) < 5 * 60 * 1000)) return;
+  try {
+    const response = await fetch(`/api/hourly?symbol=${encodeURIComponent(stock.symbol)}&_=${Date.now()}`, { cache: "no-store" });
+    if (!response.ok) throw new Error("hourly api failed");
+    const data = await response.json();
+    if (Array.isArray(data.candles) && data.candles.length > 0) {
+      stock.realHourlyCandles = data.candles.map((candle) => ({
+        time: candle.time,
+        open: Number(candle.open),
+        high: Number(candle.high),
+        low: Number(candle.low),
+        close: Number(candle.close),
+        volume: Number(candle.volume)
+      }));
+      stock.hourlyLoaded = true;
+      stock.hourlyLoadedAt = Date.now();
+      renderAll();
+    } else {
+      addLog(`${stock.symbol} ${stock.name} 找不到多日 1h 資料`);
+    }
+  } catch {
+    addLog(`${stock.symbol} ${stock.name} 多日 1h 資料載入失敗`);
   }
 }
 
@@ -1178,14 +1891,15 @@ function renderPositions() {
       .map(([symbol, pos]) => {
         const stock = stocks.find((item) => item.symbol === symbol);
         const currentPrice = priceFor(stock);
-        const value = currentPrice * pos.lots * 1000;
-        const profit = (currentPrice - pos.avg) * pos.lots * 1000;
+        const shares = pos.shares ?? (pos.lots || 0) * 1000;
+        const value = currentPrice * shares;
+        const profit = (currentPrice - pos.avg) * shares;
         equity += value;
         pnl += profit;
         return `
           <tr>
             <td>${symbol} ${stock.name}</td>
-            <td>${pos.lots}</td>
+            <td>${money.format(shares)}</td>
             <td>${priceFmt.format(pos.avg)}</td>
             <td>${priceFmt.format(currentPrice)}</td>
             <td>${money.format(value)}</td>
@@ -1218,19 +1932,8 @@ function setMarketMode(mode) {
   }
   addLog(mode === "real" ? "已切換到現實股市模式" : "已切換到模擬走勢模式");
   if (mode === "real") {
-    loadRealHistory(activeStock());
-    syncMarket();
-  }
-  renderAll();
-}
-
-function setRealChartMode(mode) {
-  state.realChartMode = mode;
-  $("realChartMode").value = mode;
-  if (mode === "daily") {
-    loadRealHistory(activeStock(), true);
-  } else {
-    loadRealIntraday(activeStock(), true);
+    if (timeframeConfig().source === "daily") loadRealHistory(activeStock());
+    else loadRealHourly(activeStock(), true);
     syncMarket();
   }
   renderAll();
@@ -1248,12 +1951,15 @@ $("buyTab").addEventListener("click", () => setSide("buy"));
 $("sellTab").addEventListener("click", () => setSide("sell"));
 $("submitOrder").addEventListener("click", submitOrder);
 $("symbolSelect").addEventListener("change", (event) => selectStock(event.target.value));
+$("orderUnit").addEventListener("change", (event) => setOrderUnit(event.target.value));
+$("orderPrice").addEventListener("input", renderOrderPreview);
+$("orderLots").addEventListener("input", renderOrderPreview);
+$("orderType").addEventListener("change", renderOrderPreview);
 $("categoryFilter").addEventListener("change", (event) => {
   state.category = event.target.value;
   renderWatchlist();
 });
 $("marketMode").addEventListener("change", (event) => setMarketMode(event.target.value));
-$("realChartMode").addEventListener("change", (event) => setRealChartMode(event.target.value));
 $("shockButton").addEventListener("click", () => {
   state.shock = 3.8;
   addLog("市場高量波動已觸發");
@@ -1270,15 +1976,28 @@ document.querySelectorAll(".ma-toggle").forEach((checkbox) => {
     drawChart();
   });
 });
+document.querySelectorAll(".timeframe-button").forEach((button) => {
+  button.addEventListener("click", () => setChartTimeframe(button.dataset.timeframe));
+});
+$("togglePercent").addEventListener("click", () => {
+  state.showPercentAxis = !state.showPercentAxis;
+  renderAll();
+});
 window.addEventListener("resize", drawChart);
-chart.addEventListener("mousemove", showChartTooltip);
+chart.addEventListener("mousedown", onChartDragStart);
+chart.addEventListener("mousemove", onChartDragMove);
 chart.addEventListener("mouseleave", hideChartTooltip);
+chart.addEventListener("wheel", onChartWheel, { passive: false });
+window.addEventListener("mouseup", onChartDragEnd);
+window.addEventListener("keydown", onKeyDown);
 
 renderCategoryFilter();
 renderSelectors();
-$("realChartMode").value = state.realChartMode;
+renderChartControls();
+setOrderUnit("share");
 setSide("buy");
 renderAll();
+loadRealHourly(activeStock(), true);
 loadRealHistory(activeStock(), true);
 syncNews();
 setInterval(tickMarket, 5000);
