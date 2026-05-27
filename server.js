@@ -283,7 +283,7 @@ async function fetchYahooHistory(symbol, suffix) {
         const high = normalizePrice(quote.high?.[index]);
         const low = normalizePrice(quote.low?.[index]);
         const close = normalizePrice(quote.close?.[index]);
-        if (![open, high, low, close].every(Number.isFinite)) return null;
+        if (![open, high, low, close].every((value) => Number.isFinite(value) && value > 0)) return null;
         return {
           time: taipeiDateFromTimestamp(timestamp),
           open,

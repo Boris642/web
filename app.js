@@ -197,6 +197,7 @@ const state = {
   category: "all",
   mode: "real",
   chartTimeframe: "1h",
+  realChartTimeframe: "1h",
   showPercentAxis: true,
   orderUnit: "share",
   viewports: {},
@@ -292,10 +293,7 @@ function candlesFor(stock, mode = state.mode) {
     }
     return stock.realHourlyCandles || [];
   }
-  if (timeframeConfig().source === "daily") {
-    return aggregateDailyCandles(stock.simCandles || [], state.chartTimeframe);
-  }
-  return aggregateCandles(stock.simCandles || [], "1h", "sim");
+  return stock.simCandles || [];
 }
 
 function activeCandles(stock) {
@@ -339,7 +337,8 @@ function buildCandles(stock) {
     price = close;
   }
   stock.simPrice = candles.at(-1).close;
-  stock.simOpen = candles[0].open;
+  // Seeded candles are context only; trading limits start from the live simulation quote.
+  stock.simOpen = candles.at(-1).close;
   stock.simCandles = candles;
   stock.realPrice = stock.price;
   stock.realOpen = stock.price;
@@ -370,11 +369,18 @@ function viewportKey() {
 function ensureViewport(totalCount) {
   const key = viewportKey();
   const existing = state.viewports[key];
+  const defaultCount = defaultVisibleBars();
+  const shouldExpandLoadedHistory = existing
+    && existing.totalCount < defaultCount
+    && totalCount > existing.totalCount
+    && existing.count >= existing.totalCount;
+  const requestedCount = shouldExpandLoadedHistory ? defaultCount : existing?.count || defaultCount;
   const next = {
-    count: Math.min(totalCount, existing?.count || defaultVisibleBars()),
-    offset: existing?.offset || 0
+    count: Math.min(totalCount, requestedCount),
+    offset: shouldExpandLoadedHistory ? 0 : existing?.offset || 0,
+    totalCount
   };
-  next.count = Math.max(6, Math.min(totalCount, next.count || totalCount));
+  next.count = Math.min(totalCount, Math.max(Math.min(6, totalCount), next.count || totalCount));
   next.offset = Math.max(0, Math.min(next.offset, Math.max(0, totalCount - next.count)));
   state.viewports[key] = next;
   return next;
@@ -509,13 +515,19 @@ function tickMarket() {
     const candles = candlesFor(stock, "sim");
     const last = candles.at(-1);
     const newsImpulse = stock.newsImpulse || 0;
-    const pressure = stock.drift + state.marketImpulse + newsImpulse + randomNormal() * stock.volatility * state.shock;
+    const orderImpulse = stock.orderImpulse || 0;
+    const orderVolumeLots = stock.orderVolumeLots || 0;
+    const queuedShares = stock.limitQueue || 0;
+    const queuedRatio = Math.abs(queuedShares) / Math.max(1, stock.baseVolume * 1000);
+    const queuedPressure = Math.sign(queuedShares) * Math.min(0.02, Math.sqrt(queuedRatio) * 0.003);
+    const pressure = stock.drift + state.marketImpulse + newsImpulse + orderImpulse + queuedPressure + randomNormal() * stock.volatility * state.shock;
     const open = last.close;
     const close = Math.max(1, roundTick(clampToLimit(stock, open * (1 + pressure))));
     const high = roundTick(clampToLimit(stock, Math.max(open, close) * (1 + Math.random() * stock.volatility)));
     const low = roundTick(clampToLimit(stock, Math.min(open, close) * (1 - Math.random() * stock.volatility)));
     const newsVolume = stock.newsVolume || 1;
-    const volume = Math.round(stock.baseVolume * state.shock * state.marketVolumeBoost * newsVolume * (1.1 + Math.abs(pressure) * 130 + Math.random()));
+    const queueVolumeBoost = 1 + Math.min(4, queuedRatio * 0.55);
+    const volume = Math.round(stock.baseVolume * state.shock * state.marketVolumeBoost * newsVolume * queueVolumeBoost * (1.1 + Math.abs(pressure) * 130 + Math.random()) + orderVolumeLots);
     candles.push({
       open,
       high,
@@ -528,6 +540,9 @@ function tickMarket() {
     stock.simPrice = close;
     stock.newsImpulse = newsImpulse * 0.72;
     stock.newsVolume = 1 + (newsVolume - 1) * 0.68;
+    stock.orderImpulse = 0;
+    stock.orderVolumeLots = 0;
+    stock.limitQueue = Math.abs(queuedShares) < 1 ? 0 : Math.round(queuedShares * 0.84);
   });
   state.shock = Math.max(1, state.shock * 0.92);
   state.marketImpulse *= 0.78;
@@ -548,6 +563,30 @@ function formatSignedPct(value) {
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
+function simulatedLimitState(stock) {
+  if (state.mode !== "sim") return null;
+  const price = priceFor(stock, "sim");
+  const upper = roundTick(clampToLimit(stock, Number.POSITIVE_INFINITY));
+  const lower = roundTick(clampToLimit(stock, 0));
+  if (price >= upper) {
+    return {
+      label: "漲停",
+      className: "limit-up",
+      queueLabel: "買單排隊",
+      queuedShares: Math.max(0, stock.limitQueue || 0)
+    };
+  }
+  if (price <= lower) {
+    return {
+      label: "跌停",
+      className: "limit-down",
+      queueLabel: "賣單排隊",
+      queuedShares: Math.max(0, -(stock.limitQueue || 0))
+    };
+  }
+  return null;
+}
+
 function renderWatchlist() {
   const visibleStocks = stocks.filter((stock) => {
     if (state.category === "all") return true;
@@ -557,9 +596,13 @@ function renderWatchlist() {
   $("stockList").innerHTML = visibleStocks
     .map((stock) => {
       const change = changePct(stock);
+      const limitState = simulatedLimitState(stock);
+      const limitBadge = limitState
+        ? `<br><small class="stock-limit-pill ${limitState.className}">${limitState.label}</small>`
+        : "";
       return `
         <button class="stock-row ${stock.symbol === state.activeSymbol ? "active" : ""}" data-symbol="${stock.symbol}" type="button">
-          <span><strong>${stock.name}</strong><br>${stock.symbol} · ${stock.group} · ${stock.sector}</span>
+          <span><strong>${stock.name}</strong><br>${stock.symbol} · ${stock.group} · ${stock.sector}${limitBadge}</span>
           <span class="stock-price"><strong>${priceFmt.format(priceFor(stock))}</strong><br><span class="${change >= 0 ? "up" : "down"}">${formatSignedPct(change)}</span></span>
         </button>
       `;
@@ -586,6 +629,7 @@ function renderCategoryFilter() {
 function renderHeader() {
   const stock = activeStock();
   const change = changePct(stock);
+  const limitState = simulatedLimitState(stock);
   const marketValue = stocks.reduce((sum, item) => sum + priceFor(item) * item.baseVolume, 0);
   const openValue = stocks.reduce((sum, item) => sum + openFor(item) * item.baseVolume, 0);
   const index = state.mode === "real" && state.realIndex?.price ? state.realIndex.price : state.indexBase * (marketValue / openValue);
@@ -605,14 +649,23 @@ function renderHeader() {
   $("simControlCard").hidden = state.mode !== "sim";
   $("simFundingPanel").hidden = state.mode !== "sim";
   $("orderImpact").hidden = state.mode !== "sim";
+  $("timeframeBar").hidden = state.mode === "sim";
   $("pauseSim").textContent = state.simPaused ? "繼續模擬" : "暫停模擬";
   $("simStatus").textContent = state.simPaused ? "模擬已暫停" : "每 5 秒更新一根";
   $("clock").textContent = new Date().toLocaleTimeString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" });
   $("activeName").textContent = stock.name;
   $("activeMeta").textContent = `${stock.symbol} · ${stock.group} · ${stock.sector} · 現股`;
   $("activePrice").textContent = priceFmt.format(priceFor(stock));
+  $("activePrice").className = limitState?.className || "";
   $("activeChange").textContent = formatSignedPct(change);
-  $("activeChange").className = change >= 0 ? "up" : "down";
+  $("activeChange").className = limitState?.className || (change >= 0 ? "up" : "down");
+  $("activeLimitBadge").hidden = !limitState;
+  $("activeLimitBadge").textContent = limitState?.label || "";
+  $("activeLimitBadge").className = `limit-badge ${limitState?.className || ""}`;
+  $("activeQueueBadge").hidden = !limitState?.queuedShares;
+  $("activeQueueBadge").textContent = limitState?.queuedShares
+    ? `${limitState.queueLabel} ${money.format(limitState.queuedShares)} 股`
+    : "";
   if (document.activeElement !== $("orderPrice")) {
     $("orderPrice").value = priceFor(stock);
   }
@@ -951,6 +1004,7 @@ function chartPointFromEvent(event, allowOutside = false) {
 
 function setChartTimeframe(timeframe) {
   state.chartTimeframe = timeframe;
+  if (state.mode === "real") state.realChartTimeframe = timeframe;
   const stock = activeStock();
   if (state.mode === "real") {
     if (timeframeConfig(timeframe).source === "daily") loadRealHistory(stock, true);
@@ -1504,6 +1558,16 @@ function estimateOrderImpact(stock, value) {
   return { pct, ratio };
 }
 
+function simulatedImpactProjection(stock, impactPct) {
+  const direction = state.side === "buy" ? 1 : -1;
+  const lastPrice = priceFor(stock, "sim");
+  const unconstrainedPrice = lastPrice * (1 + direction * impactPct);
+  const close = roundTick(clampToLimit(stock, unconstrainedPrice));
+  const actualPct = Math.abs((close - lastPrice) / lastPrice);
+  const clipped = direction > 0 ? close < unconstrainedPrice : close > unconstrainedPrice;
+  return { close, actualPct, clipped, direction };
+}
+
 function renderOrderImpactPreview() {
   if (!$("orderImpact") || state.mode !== "sim") return;
   const stock = stocks.find((item) => item.symbol === $("symbolSelect").value) || activeStock();
@@ -1513,31 +1577,31 @@ function renderOrderImpactPreview() {
   const impactPrice = $("orderType").value === "market" ? currentPrice : requestedPrice;
   const value = impactPrice * shares;
   const impact = estimateOrderImpact(stock, value);
+  const projection = simulatedImpactProjection(stock, impact.pct);
+  $("orderImpact").classList.toggle("limit-warning", projection.clipped);
   if (impact.pct < 0.0005) {
+    $("orderImpact").classList.remove("limit-warning");
     $("orderImpact").textContent = "此委託對模擬市場的影響極小";
     return;
   }
-  $("orderImpact").textContent = `預估市場衝擊 ${state.side === "buy" ? "+" : "-"}${(impact.pct * 100).toFixed(2)}% · 約為近期單根成交額 ${(impact.ratio * 100).toFixed(1)}%`;
+  if (projection.clipped) {
+    const limitLabel = state.side === "buy" ? "漲停" : "跌停";
+    const queuedLabel = state.side === "buy" ? "買單排隊" : "賣單排隊";
+    const existingQueue = Math.abs(stock.limitQueue || 0);
+    const queueText = existingQueue > 0 ? ` · 目前排隊 ${money.format(existingQueue)} 股` : "";
+    $("orderImpact").textContent = `下一根 K 棒預估觸及${limitLabel} ${priceFmt.format(projection.close)} · 價格可反映 ${projection.actualPct > 0 ? `${state.side === "buy" ? "+" : "-"}${(projection.actualPct * 100).toFixed(2)}%` : "0.00%"} · 超出部分將形成${queuedLabel}${queueText}`;
+    return;
+  }
+  $("orderImpact").textContent = `下一根 K 棒預估市場衝擊 ${state.side === "buy" ? "+" : "-"}${(impact.pct * 100).toFixed(2)}% · 約為近期單根成交額 ${(impact.ratio * 100).toFixed(1)}%`;
 }
 
-function applySimulatedOrderImpact(stock, value, impactPct) {
-  if (state.mode !== "sim" || impactPct <= 0) return;
+function applySimulatedOrderImpact(stock, value, impactPct, shares) {
+  if (state.mode !== "sim" || impactPct <= 0) return null;
   const direction = state.side === "buy" ? 1 : -1;
-  const candles = candlesFor(stock, "sim");
-  const last = candles.at(-1);
-  const close = roundTick(clampToLimit(stock, last.close * (1 + direction * impactPct)));
-  const orderLots = Math.max(1, Math.round(value / Math.max(1, last.close * 1000)));
-  const volume = Math.round(last.volume + orderLots);
-  candles.push({
-    open: last.close,
-    high: Math.max(last.close, close),
-    low: Math.min(last.close, close),
-    close,
-    volume,
-    time: `${new Date().toLocaleTimeString("zh-TW", { hour12: false })} 大額${direction > 0 ? "買盤" : "賣盤"}`
-  });
-  stock.simCandles = candles.slice(-88);
-  stock.simPrice = close;
+  const projection = simulatedImpactProjection(stock, impactPct);
+  const orderLots = Math.max(1, Math.round(value / Math.max(1, priceFor(stock, "sim") * 1000)));
+  stock.orderImpulse = Math.max(-0.095, Math.min(0.095, (stock.orderImpulse || 0) + direction * impactPct));
+  stock.orderVolumeLots = (stock.orderVolumeLots || 0) + orderLots;
   stock.newsImpulse = (stock.newsImpulse || 0) + direction * impactPct * 0.34;
   stock.newsVolume = Math.max(stock.newsVolume || 1, 1 + Math.min(4, impactPct * 45));
 
@@ -1548,6 +1612,11 @@ function applySimulatedOrderImpact(stock, value, impactPct) {
   });
   state.marketImpulse += direction * impactPct * (stock.symbol === "2330" ? 0.16 : 0.04);
   state.marketVolumeBoost = Math.max(state.marketVolumeBoost, 1 + Math.min(2.5, impactPct * 28));
+  if (projection.clipped) {
+    const reflectedRatio = impactPct > 0 ? Math.min(1, projection.actualPct / impactPct) : 1;
+    stock.limitQueue = (stock.limitQueue || 0) + direction * Math.round(shares * (1 - reflectedRatio));
+  }
+  return projection;
 }
 
 function submitOrder() {
@@ -1561,7 +1630,7 @@ function submitOrder() {
   const orderImpact = state.mode === "sim" ? estimateOrderImpact(stock, preliminaryValue) : { pct: 0, ratio: 0 };
   const sideDirection = state.side === "buy" ? 1 : -1;
   const fillPrice = state.mode === "sim" && orderType === "market"
-    ? roundTick(preliminaryPrice * (1 + sideDirection * orderImpact.pct * 0.48))
+    ? roundTick(clampToLimit(stock, preliminaryPrice * (1 + sideDirection * orderImpact.pct * 0.48)))
     : preliminaryPrice;
   const value = fillPrice * shares;
   const fee = Math.max(20, value * 0.001425);
@@ -1591,8 +1660,14 @@ function submitOrder() {
 
   addLog(`${state.side === "buy" ? "買進" : "賣出"} ${stock.symbol} ${stock.name} ${formatOrderQuantity(shares)} @ ${priceFmt.format(fillPrice)}`);
   if (state.mode === "sim" && orderImpact.pct >= 0.0005) {
-    applySimulatedOrderImpact(stock, value, orderImpact.pct);
-    addLog(`市場衝擊已反映：${state.side === "buy" ? "+" : "-"}${(orderImpact.pct * 100).toFixed(2)}% · 成交 ${formatOrderQuantity(shares)}`);
+    const projection = applySimulatedOrderImpact(stock, value, orderImpact.pct, shares);
+    if (projection?.clipped) {
+      const limitLabel = state.side === "buy" ? "漲停" : "跌停";
+      const queueLabel = state.side === "buy" ? "買單排隊" : "賣單排隊";
+      addLog(`市場衝擊待更新：下一根 K 棒將觸及${limitLabel} ${priceFmt.format(projection.close)}，超出力道轉為${queueLabel}`);
+    } else {
+      addLog(`市場衝擊待更新：下一根 K 棒預估 ${state.side === "buy" ? "+" : "-"}${(projection.actualPct * 100).toFixed(2)}% · 成交 ${formatOrderQuantity(shares)}`);
+    }
   }
   state.activeSymbol = stock.symbol;
   renderAll();
@@ -1616,6 +1691,22 @@ function escapeHtml(value) {
 function parseNewsTime(value) {
   const time = new Date(value);
   return Number.isNaN(time.getTime()) ? new Date() : time;
+}
+
+function normalizeRealCandles(candles) {
+  return (candles || [])
+    .map((candle) => ({
+      time: candle.time,
+      open: Number(candle.open),
+      high: Number(candle.high),
+      low: Number(candle.low),
+      close: Number(candle.close),
+      volume: Math.max(0, Number(candle.volume) || 0)
+    }))
+    .filter((candle) => (
+      candle.time
+      && [candle.open, candle.high, candle.low, candle.close].every((value) => Number.isFinite(value) && value > 0)
+    ));
 }
 
 function minuteStamp(quote) {
@@ -1771,14 +1862,8 @@ async function loadRealHistory(stock, force = false) {
     if (!response.ok) throw new Error("history api failed");
     const data = await response.json();
     if (Array.isArray(data.candles) && data.candles.length > 0) {
-      stock.realCandles = data.candles.map((candle) => ({
-        time: candle.time,
-        open: Number(candle.open),
-        high: Number(candle.high),
-        low: Number(candle.low),
-        close: Number(candle.close),
-        volume: Number(candle.volume)
-      }));
+      stock.realCandles = normalizeRealCandles(data.candles);
+      if (stock.realCandles.length === 0) throw new Error("history contained no valid candles");
       stock.realOpen = stock.realCandles.at(-1).open;
       stock.realPrice = stock.realCandles.at(-1).close;
       stock.historyLoaded = true;
@@ -1801,14 +1886,8 @@ async function loadRealIntraday(stock, force = false) {
     if (!response.ok) throw new Error("intraday api failed");
     const data = await response.json();
     if (Array.isArray(data.candles) && data.candles.length > 0) {
-      const fetchedCandles = data.candles.map((candle) => ({
-        time: candle.time,
-        open: Number(candle.open),
-        high: Number(candle.high),
-        low: Number(candle.low),
-        close: Number(candle.close),
-        volume: Number(candle.volume)
-      }));
+      const fetchedCandles = normalizeRealCandles(data.candles);
+      if (fetchedCandles.length === 0) throw new Error("intraday contained no valid candles");
       const liveTail = (stock.realLiveCandles || []).filter((candle) => {
         const fetchedLast = fetchedCandles.at(-1)?.time || "";
         return String(candle.time).localeCompare(String(fetchedLast)) > 0 && (candle.volume || 0) > 1;
@@ -1834,14 +1913,8 @@ async function loadRealHourly(stock, force = false) {
     if (!response.ok) throw new Error("hourly api failed");
     const data = await response.json();
     if (Array.isArray(data.candles) && data.candles.length > 0) {
-      stock.realHourlyCandles = data.candles.map((candle) => ({
-        time: candle.time,
-        open: Number(candle.open),
-        high: Number(candle.high),
-        low: Number(candle.low),
-        close: Number(candle.close),
-        volume: Number(candle.volume)
-      }));
+      stock.realHourlyCandles = normalizeRealCandles(data.candles);
+      if (stock.realHourlyCandles.length === 0) throw new Error("hourly contained no valid candles");
       stock.hourlyLoaded = true;
       stock.hourlyLoadedAt = Date.now();
       renderAll();
@@ -1996,7 +2069,9 @@ function renderAll() {
 }
 
 function setMarketMode(mode) {
+  if (state.mode === "real") state.realChartTimeframe = state.chartTimeframe;
   state.mode = mode;
+  state.chartTimeframe = mode === "real" ? state.realChartTimeframe : "1h";
   $("marketMode").value = mode;
   state.realSync = mode === "real" ? state.realSync : false;
   state.marketOpen = mode === "real" ? state.marketOpen : true;

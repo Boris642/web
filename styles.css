@@ -211,9 +211,53 @@ h3 {
   text-align: right;
 }
 
+.quote-state {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  margin-bottom: 4px;
+}
+
+.limit-badge,
+.queue-badge,
+.stock-limit-pill {
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 5px;
+  padding: 4px 8px;
+}
+
+.limit-badge.limit-up,
+.stock-limit-pill.limit-up {
+  color: #fff;
+  background: var(--green);
+}
+
+.limit-badge.limit-down,
+.stock-limit-pill.limit-down {
+  color: #071914;
+  background: var(--red);
+}
+
+.queue-badge {
+  color: var(--amber);
+  border: 1px solid rgba(242, 184, 75, 0.45);
+  background: rgba(242, 184, 75, 0.09);
+}
+
 .quote-box strong {
   display: block;
   font-size: 31px;
+}
+
+.quote-box strong.limit-up {
+  color: var(--green);
+}
+
+.quote-box strong.limit-down {
+  color: var(--red);
 }
 
 .up {
@@ -240,6 +284,12 @@ h3 {
   max-height: 565px;
   overflow: auto;
   padding-right: 4px;
+}
+
+.stock-limit-pill {
+  display: inline-block;
+  margin-top: 5px;
+  padding: 2px 6px;
 }
 
 .stock-row {
@@ -433,6 +483,15 @@ select {
   color: var(--amber);
   font-size: 12px;
   line-height: 1.45;
+}
+
+.impact-note.limit-warning {
+  padding: 9px 10px;
+  border: 1px solid rgba(255, 77, 95, 0.55);
+  border-radius: 6px;
+  color: #ffd9dc;
+  background: rgba(255, 77, 95, 0.12);
+  font-weight: 700;
 }
 
 .summary-grid {
