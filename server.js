@@ -118,6 +118,14 @@ async function fetchJson(url) {
 }
 
 async function fetchMarket(symbols) {
+  try {
+    return await fetchTwseMarket(symbols);
+  } catch {
+    return fetchYahooMarket(symbols);
+  }
+}
+
+async function fetchTwseMarket(symbols) {
   const uniqueSymbols = [...new Set(symbols)].filter(Boolean);
   const channels = uniqueSymbols.flatMap((symbol) => [`tse_${symbol}.tw`, `otc_${symbol}.tw`]);
   const quotes = new Map();
@@ -168,6 +176,78 @@ async function fetchMarket(symbols) {
   return { quotes: [...quotes.values()], index, fetchedAt: new Date().toISOString(), source: "TWSE MIS" };
 }
 
+async function fetchYahooMarket(symbols) {
+  const uniqueSymbols = [...new Set(symbols)].filter(Boolean);
+  const quotes = [];
+
+  for (const symbol of uniqueSymbols) {
+    const quote = await fetchYahooQuote(symbol, "TW");
+    if (quote) {
+      quotes.push(quote);
+      continue;
+    }
+    const otcQuote = await fetchYahooQuote(symbol, "TWO");
+    if (otcQuote) quotes.push(otcQuote);
+  }
+
+  const indexQuote = await fetchYahooQuote("^TWII", "");
+  const index = indexQuote
+    ? {
+        price: indexQuote.price,
+        previousClose: indexQuote.previousClose,
+        date: indexQuote.date,
+        time: indexQuote.time
+      }
+    : null;
+
+  return { quotes, index, fetchedAt: new Date().toISOString(), source: "Yahoo Finance fallback" };
+}
+
+async function fetchYahooQuote(symbol, suffix) {
+  const target = suffix ? `${symbol}.${suffix}` : symbol;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(target)}?range=5d&interval=1d&includePrePost=false&events=history`;
+  try {
+    const data = await fetchJson(url);
+    const result = data.chart?.result?.[0];
+    const meta = result?.meta || {};
+    const timestamps = result?.timestamp || [];
+    const quote = result?.indicators?.quote?.[0] || {};
+    if (!timestamps.length) return null;
+    const lastIndex = timestamps.length - 1;
+    const price = normalizePrice(meta.regularMarketPrice ?? quote.close?.[lastIndex]);
+    const previousClose = normalizePrice(meta.previousClose ?? meta.chartPreviousClose ?? quote.close?.[Math.max(0, lastIndex - 1)]);
+    if (!price) return null;
+    const timestamp = timestamps[lastIndex];
+    const taipeiDate = taipeiDateFromTimestamp(timestamp);
+    const taipeiTime = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Taipei",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false
+    }).format(new Date(timestamp * 1000));
+    return {
+      symbol,
+      name: meta.longName || meta.shortName || symbol,
+      exchange: suffix === "TWO" ? "otc" : "tse",
+      price,
+      priceSource: "yahoo",
+      bid: null,
+      ask: null,
+      open: normalizePrice(quote.open?.[lastIndex]),
+      high: normalizePrice(meta.regularMarketDayHigh ?? quote.high?.[lastIndex]),
+      low: normalizePrice(meta.regularMarketDayLow ?? quote.low?.[lastIndex]),
+      previousClose,
+      volume: Number(meta.regularMarketVolume ?? quote.volume?.[lastIndex]) || null,
+      temporalVolume: null,
+      date: taipeiDate.replace(/-/g, ""),
+      time: taipeiTime
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function fetchHistory(symbol) {
   const yahooTw = await fetchYahooHistory(symbol, "TW");
   if (yahooTw.candles.length > 0) return yahooTw;
@@ -184,8 +264,14 @@ async function fetchIntraday(symbol) {
   return fetchYahooIntraday(symbol, "TWO");
 }
 
+async function fetchHourly(symbol) {
+  const yahooTw = await fetchYahooRange(symbol, "TW", "3mo", "60m");
+  if (yahooTw.candles.length > 0) return yahooTw;
+  return fetchYahooRange(symbol, "TWO", "3mo", "60m");
+}
+
 async function fetchYahooHistory(symbol, suffix) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(`${symbol}.${suffix}`)}?range=6mo&interval=1d&events=history`;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(`${symbol}.${suffix}`)}?range=2y&interval=1d&events=history`;
   try {
     const data = await fetchJson(url);
     const result = data.chart?.result?.[0];
@@ -208,7 +294,7 @@ async function fetchYahooHistory(symbol, suffix) {
         };
       })
       .filter(Boolean);
-    return { symbol, candles: rows.slice(-88), source: `Yahoo Finance ${symbol}.${suffix}` };
+    return { symbol, candles: rows.slice(-520), source: `Yahoo Finance ${symbol}.${suffix}` };
   } catch {
     return { symbol, candles: [], source: `Yahoo Finance ${symbol}.${suffix}` };
   }
@@ -249,10 +335,45 @@ async function fetchYahooIntraday(symbol, suffix) {
   }
 }
 
+async function fetchYahooRange(symbol, suffix, range, interval) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(`${symbol}.${suffix}`)}?range=${encodeURIComponent(range)}&interval=${encodeURIComponent(interval)}&includePrePost=false&events=history`;
+  try {
+    const data = await fetchJson(url);
+    const result = data.chart?.result?.[0];
+    const timestamps = result?.timestamp || [];
+    const quote = result?.indicators?.quote?.[0] || {};
+    const rows = timestamps
+      .map((timestamp, index) => {
+        const close = normalizePrice(quote.close?.[index]);
+        if (!close) return null;
+        const open = normalizePrice(quote.open?.[index]) ?? close;
+        const high = normalizePrice(quote.high?.[index]) ?? close;
+        const low = normalizePrice(quote.low?.[index]) ?? close;
+        return {
+          time: `${taipeiDateFromTimestamp(timestamp)} ${new Intl.DateTimeFormat("en-GB", {
+            timeZone: "Asia/Taipei",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false
+          }).format(new Date(timestamp * 1000))}`,
+          open,
+          high,
+          low,
+          close,
+          volume: Math.max(1, Math.round((Number(quote.volume?.[index]) || 0) / 1000))
+        };
+      })
+      .filter(Boolean);
+    return { symbol, candles: rows, source: `Yahoo Finance ${range} ${interval} ${symbol}.${suffix}` };
+  } catch {
+    return { symbol, candles: [], source: `Yahoo Finance ${range} ${interval} ${symbol}.${suffix}` };
+  }
+}
+
 async function fetchTwseHistory(symbol) {
   const rows = [];
   const now = new Date();
-  for (let offset = -5; offset <= 0; offset += 1) {
+  for (let offset = -23; offset <= 0; offset += 1) {
     const month = addMonths(now, offset);
     const url = `https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=${yyyymmdd(month)}&stockNo=${encodeURIComponent(symbol)}`;
     try {
@@ -277,13 +398,13 @@ async function fetchTwseHistory(symbol) {
     }
   }
   const unique = new Map(rows.map((row) => [row.time, row]));
-  return { symbol, candles: [...unique.values()].sort((a, b) => a.time.localeCompare(b.time)).slice(-88), source: "TWSE STOCK_DAY" };
+  return { symbol, candles: [...unique.values()].sort((a, b) => a.time.localeCompare(b.time)).slice(-520), source: "TWSE STOCK_DAY" };
 }
 
 async function fetchTpexHistory(symbol) {
   const rows = [];
   const now = new Date();
-  for (let offset = -5; offset <= 0; offset += 1) {
+  for (let offset = -23; offset <= 0; offset += 1) {
     const month = addMonths(now, offset);
     const rocYear = month.getFullYear() - 1911;
     const rocMonth = String(month.getMonth() + 1).padStart(2, "0");
@@ -310,7 +431,7 @@ async function fetchTpexHistory(symbol) {
     }
   }
   const unique = new Map(rows.map((row) => [row.time, row]));
-  return { symbol, candles: [...unique.values()].sort((a, b) => a.time.localeCompare(b.time)).slice(-88), source: "TPEx st43_result" };
+  return { symbol, candles: [...unique.values()].sort((a, b) => a.time.localeCompare(b.time)).slice(-520), source: "TPEx st43_result" };
 }
 
 function decodeXml(text) {
@@ -422,6 +543,12 @@ const server = http.createServer(async (req, res) => {
       const symbol = url.searchParams.get("symbol");
       if (!symbol) throw new Error("Missing symbol");
       sendJson(res, await fetchIntraday(symbol));
+      return;
+    }
+    if (url.pathname === "/api/hourly") {
+      const symbol = url.searchParams.get("symbol");
+      if (!symbol) throw new Error("Missing symbol");
+      sendJson(res, await fetchHourly(symbol));
       return;
     }
     if (url.pathname === "/api/news") {
