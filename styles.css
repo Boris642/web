@@ -346,6 +346,30 @@ select {
   color: #062119;
 }
 
+.funding-panel {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.funding-panel label {
+  margin: 0;
+}
+
+.funding-panel .secondary-action {
+  min-height: 44px;
+}
+
+.impact-note {
+  min-height: 34px;
+  margin: 0 0 10px;
+  color: var(--amber);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .summary-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

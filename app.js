@@ -429,6 +429,8 @@ function renderHeader() {
   $("realChartMode").disabled = state.mode !== "real";
   $("realChartCard").hidden = state.mode !== "real";
   $("simControlCard").hidden = state.mode !== "sim";
+  $("simFundingPanel").hidden = state.mode !== "sim";
+  $("orderImpact").hidden = state.mode !== "sim";
   $("pauseSim").textContent = state.simPaused ? "繼續模擬" : "暫停模擬";
   $("simStatus").textContent = state.simPaused ? "模擬已暫停" : "每 5 秒更新一根";
   $("clock").textContent = new Date().toLocaleTimeString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" });
@@ -441,6 +443,7 @@ function renderHeader() {
     $("orderPrice").value = priceFor(stock);
   }
   $("buyingPower").textContent = `可用資金 ${money.format(state.cash)}`;
+  renderOrderImpactPreview();
 }
 
 function drawChart() {
@@ -797,6 +800,62 @@ function setSide(side) {
   $("sellTab").classList.toggle("active", side === "sell");
   $("submitOrder").textContent = side === "buy" ? "送出買單" : "送出賣單";
   $("submitOrder").classList.toggle("sell", side === "sell");
+  renderOrderImpactPreview();
+}
+
+function simulatedTurnover(stock) {
+  const candles = candlesFor(stock, "sim").slice(-12);
+  const total = candles.reduce((sum, candle) => sum + candle.close * candle.volume * 1000, 0);
+  return Math.max(1, total / Math.max(1, candles.length));
+}
+
+function estimateOrderImpact(stock, value) {
+  const ratio = value / simulatedTurnover(stock);
+  const pct = Math.min(0.095, Math.sqrt(Math.max(0, ratio)) * 0.03);
+  return { pct, ratio };
+}
+
+function renderOrderImpactPreview() {
+  if (!$("orderImpact") || state.mode !== "sim") return;
+  const stock = stocks.find((item) => item.symbol === $("symbolSelect").value) || activeStock();
+  const lots = Math.max(1, Math.floor(Number($("orderLots").value) || 1));
+  const value = priceFor(stock, "sim") * lots * 1000;
+  const impact = estimateOrderImpact(stock, value);
+  if (impact.pct < 0.0005) {
+    $("orderImpact").textContent = "此委託對模擬市場的影響極小";
+    return;
+  }
+  $("orderImpact").textContent = `預估市場衝擊 ${state.side === "buy" ? "+" : "-"}${(impact.pct * 100).toFixed(2)}% · 約為近期單根成交額 ${(impact.ratio * 100).toFixed(1)}%`;
+}
+
+function applySimulatedOrderImpact(stock, value, impactPct) {
+  if (state.mode !== "sim" || impactPct <= 0) return;
+  const direction = state.side === "buy" ? 1 : -1;
+  const candles = candlesFor(stock, "sim");
+  const last = candles.at(-1);
+  const close = roundTick(clampToLimit(stock, last.close * (1 + direction * impactPct)));
+  const orderLots = Math.max(1, Math.round(value / Math.max(1, last.close * 1000)));
+  const volume = Math.round(last.volume + orderLots);
+  candles.push({
+    open: last.close,
+    high: Math.max(last.close, close),
+    low: Math.min(last.close, close),
+    close,
+    volume,
+    time: `${new Date().toLocaleTimeString("zh-TW", { hour12: false })} 大額${direction > 0 ? "買盤" : "賣盤"}`
+  });
+  stock.simCandles = candles.slice(-88);
+  stock.simPrice = close;
+  stock.newsImpulse = (stock.newsImpulse || 0) + direction * impactPct * 0.34;
+  stock.newsVolume = Math.max(stock.newsVolume || 1, 1 + Math.min(4, impactPct * 45));
+
+  stocks.forEach((peer) => {
+    if (peer === stock || peer.sector !== stock.sector) return;
+    peer.newsImpulse = (peer.newsImpulse || 0) + direction * impactPct * 0.1;
+    peer.newsVolume = Math.max(peer.newsVolume || 1, 1 + Math.min(1.5, impactPct * 12));
+  });
+  state.marketImpulse += direction * impactPct * (stock.symbol === "2330" ? 0.16 : 0.04);
+  state.marketVolumeBoost = Math.max(state.marketVolumeBoost, 1 + Math.min(2.5, impactPct * 28));
 }
 
 function submitOrder() {
@@ -805,8 +864,14 @@ function submitOrder() {
   const orderType = $("orderType").value;
   const currentPrice = priceFor(stock);
   const requestedPrice = Number($("orderPrice").value) || currentPrice;
-  const fillPrice = orderType === "market" ? currentPrice : requestedPrice;
   const shares = lots * 1000;
+  const preliminaryPrice = orderType === "market" ? currentPrice : requestedPrice;
+  const preliminaryValue = preliminaryPrice * shares;
+  const orderImpact = state.mode === "sim" ? estimateOrderImpact(stock, preliminaryValue) : { pct: 0, ratio: 0 };
+  const sideDirection = state.side === "buy" ? 1 : -1;
+  const fillPrice = state.mode === "sim" && orderType === "market"
+    ? roundTick(preliminaryPrice * (1 + sideDirection * orderImpact.pct * 0.48))
+    : preliminaryPrice;
   const value = fillPrice * shares;
   const fee = Math.max(20, value * 0.001425);
   const tax = state.side === "sell" ? value * 0.003 : 0;
@@ -834,6 +899,10 @@ function submitOrder() {
   }
 
   addLog(`${state.side === "buy" ? "買進" : "賣出"} ${stock.symbol} ${stock.name} ${lots} 張 @ ${priceFmt.format(fillPrice)}`);
+  if (state.mode === "sim" && orderImpact.pct >= 0.0005) {
+    applySimulatedOrderImpact(stock, value, orderImpact.pct);
+    addLog(`市場衝擊已反映：${state.side === "buy" ? "+" : "-"}${(orderImpact.pct * 100).toFixed(2)}% · 放量 ${money.format(lots)} 張`);
+  }
   state.activeSymbol = stock.symbol;
   renderAll();
 }
@@ -1248,6 +1317,14 @@ $("buyTab").addEventListener("click", () => setSide("buy"));
 $("sellTab").addEventListener("click", () => setSide("sell"));
 $("submitOrder").addEventListener("click", submitOrder);
 $("symbolSelect").addEventListener("change", (event) => selectStock(event.target.value));
+$("orderLots").addEventListener("input", renderOrderImpactPreview);
+$("orderType").addEventListener("change", renderOrderImpactPreview);
+$("setSimulationCash").addEventListener("click", () => {
+  const cash = Math.max(0, Number($("simulationCash").value) || 0);
+  state.cash = cash;
+  addLog(`模擬可用資金設定為 ${money.format(cash)}`);
+  renderAll();
+});
 $("categoryFilter").addEventListener("change", (event) => {
   state.category = event.target.value;
   renderWatchlist();

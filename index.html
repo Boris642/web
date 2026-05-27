@@ -123,6 +123,15 @@
             </select>
           </label>
 
+          <div id="simFundingPanel" class="funding-panel">
+            <label>
+              模擬可用資金
+              <input id="simulationCash" type="number" min="0" step="1000000" value="1000000" />
+            </label>
+            <button id="setSimulationCash" class="secondary-action" type="button">設定資金</button>
+          </div>
+          <p id="orderImpact" class="impact-note"></p>
+
           <button id="submitOrder" class="primary-action" type="button">送出買單</button>
 
           <div class="summary-grid">
