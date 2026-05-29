@@ -84,6 +84,7 @@ const stocks = [
 ];
 
 const stockCategories = [
+  { value: "holdings", label: "持股" },
   { value: "all", label: "全部" },
   { value: "航運", label: "航運" },
   { value: "金融", label: "金融" },
@@ -187,8 +188,10 @@ const timeframeOptions = [
 const state = {
   activeSymbol: "2330",
   side: "buy",
-  cash: 1000000,
-  positions: {},
+  portfolios: {
+    real: { cash: 1000000, positions: {} },
+    sim: { cash: 1000000, positions: {} }
+  },
   shock: 1,
   indexBase: 36296.12,
   marketImpulse: 0,
@@ -214,36 +217,70 @@ const state = {
 };
 
 const SIM_PORTFOLIO_KEY = "twse-sim-portfolio-v1";
+const REAL_PORTFOLIO_KEY = "twse-real-portfolio-v1";
 
-function loadSimPortfolio() {
+function activePortfolio(mode = state.mode) {
+  return state.portfolios[mode === "sim" ? "sim" : "real"];
+}
+
+function normalizePortfolio(saved) {
+  const portfolio = { cash: 1000000, positions: {} };
+  if (!saved || typeof saved !== "object") return portfolio;
+  if (Number.isFinite(Number(saved.cash))) portfolio.cash = Math.max(0, Number(saved.cash));
+  if (saved.positions && typeof saved.positions === "object") {
+    portfolio.positions = Object.fromEntries(
+      Object.entries(saved.positions)
+        .map(([symbol, pos]) => [
+          symbol,
+          {
+            shares: Math.max(0, Number(pos.shares) || 0),
+            avg: Math.max(0, Number(pos.avg) || 0)
+          }
+        ])
+        .filter(([, pos]) => pos.shares > 0)
+    );
+  }
+  return portfolio;
+}
+
+function loadPortfolio(key, mode) {
   try {
-    const saved = JSON.parse(localStorage.getItem(SIM_PORTFOLIO_KEY) || "{}");
-    if (saved && typeof saved === "object") {
-      if (Number.isFinite(Number(saved.cash))) state.cash = Math.max(0, Number(saved.cash));
-      if (saved.positions && typeof saved.positions === "object") {
-        state.positions = Object.fromEntries(
-          Object.entries(saved.positions)
-            .map(([symbol, pos]) => [
-              symbol,
-              {
-                shares: Math.max(0, Number(pos.shares) || 0),
-                avg: Math.max(0, Number(pos.avg) || 0)
-              }
-            ])
-            .filter(([, pos]) => pos.shares > 0)
-        );
-      }
-    }
+    state.portfolios[mode] = normalizePortfolio(JSON.parse(localStorage.getItem(key) || "{}"));
   } catch {
-    localStorage.removeItem(SIM_PORTFOLIO_KEY);
+    localStorage.removeItem(key);
   }
 }
 
+function savePortfolio(mode = state.mode) {
+  const key = mode === "sim" ? SIM_PORTFOLIO_KEY : REAL_PORTFOLIO_KEY;
+  const portfolio = activePortfolio(mode);
+  try {
+    localStorage.setItem(key, JSON.stringify({
+      cash: portfolio.cash,
+      positions: portfolio.positions,
+      savedAt: new Date().toISOString()
+    }));
+  } catch {
+    addLog("投資組合無法儲存，請確認瀏覽器儲存空間是否可用");
+  }
+}
+
+function loadPortfolios() {
+  loadPortfolio(REAL_PORTFOLIO_KEY, "real");
+  loadPortfolio(SIM_PORTFOLIO_KEY, "sim");
+}
+
+function loadSimPortfolio() {
+  loadPortfolio(SIM_PORTFOLIO_KEY, "sim");
+}
+
 function saveSimPortfolio() {
+  savePortfolio("sim");
+  return;
   try {
     localStorage.setItem(SIM_PORTFOLIO_KEY, JSON.stringify({
-      cash: state.cash,
-      positions: state.positions,
+      cash: activePortfolio("sim").cash,
+      positions: activePortfolio("sim").positions,
       savedAt: new Date().toISOString()
     }));
   } catch {
@@ -252,9 +289,9 @@ function saveSimPortfolio() {
 }
 
 function resetSimPortfolio() {
-  state.positions = {};
+  state.portfolios.sim.positions = {};
   localStorage.setItem(SIM_PORTFOLIO_KEY, JSON.stringify({
-    cash: state.cash,
+    cash: state.portfolios.sim.cash,
     positions: {},
     savedAt: new Date().toISOString()
   }));
@@ -463,8 +500,8 @@ function mountReactAppShell() {
     return h("main", { className: "app", "data-react-shell": "true" },
       h(MarketStrip),
       h("section", { className: "workspace" }, h(Watchlist), h(ChartPanel), h(TradeTicket)),
-      h(NewsPanel),
-      h(PositionsPanel)
+      h(PositionsPanel),
+      h(NewsPanel)
     );
   }
 
@@ -864,8 +901,14 @@ function simulatedLimitState(stock) {
 function renderWatchlist() {
   const visibleStocks = stocks.filter((stock) => {
     if (state.category === "all") return true;
+    if (state.category === "holdings") return (activePortfolio().positions[stock.symbol]?.shares || 0) > 0;
     return stock.group === state.category || stock.sector === state.category;
   });
+
+  if (visibleStocks.length === 0) {
+    $("stockList").innerHTML = `<div class="empty stock-empty">目前沒有持股</div>`;
+    return;
+  }
 
   $("stockList").innerHTML = visibleStocks
     .map((stock) => {
@@ -949,9 +992,9 @@ function renderHeader() {
   if (document.activeElement !== $("orderPrice")) {
     $("orderPrice").value = priceFor(stock);
   }
-  $("buyingPower").textContent = `可用資金 ${money.format(state.cash)}`;
+  $("buyingPower").textContent = `可用資金 ${money.format(activePortfolio().cash)}`;
   if ($("simulationCash") && document.activeElement !== $("simulationCash")) {
-    $("simulationCash").value = state.cash;
+    $("simulationCash").value = activePortfolio("sim").cash;
   }
   renderOrderImpactPreview();
   $("togglePercent").classList.toggle("active", state.showPercentAxis);
@@ -1904,6 +1947,7 @@ function applySimulatedOrderImpact(stock, value, impactPct, shares) {
 
 function submitOrder() {
   const stock = stocks.find((item) => item.symbol === $("symbolSelect").value);
+  const portfolio = activePortfolio();
   const shares = sharesFromOrderInput();
   const orderType = $("orderType").value;
   const currentPrice = priceFor(stock);
@@ -1918,27 +1962,27 @@ function submitOrder() {
   const value = fillPrice * shares;
   const fee = Math.max(20, value * 0.001425);
   const tax = state.side === "sell" ? value * 0.003 : 0;
-  const pos = state.positions[stock.symbol] || { shares: 0, avg: 0 };
+  const pos = portfolio.positions[stock.symbol] || { shares: 0, avg: 0 };
 
   if (state.side === "buy") {
     const total = value + fee;
-    if (total > state.cash) {
+    if (total > portfolio.cash) {
       addLog(`資金不足，${stock.name} ${formatOrderQuantity(shares)}未成交`);
       return;
     }
     const oldShares = pos.shares;
     pos.avg = oldShares + shares > 0 ? (pos.avg * oldShares + value) / (oldShares + shares) : fillPrice;
     pos.shares += shares;
-    state.cash -= total;
-    state.positions[stock.symbol] = pos;
+    portfolio.cash -= total;
+    portfolio.positions[stock.symbol] = pos;
   } else {
     if (pos.shares < shares) {
       addLog(`庫存不足，${stock.name} ${formatOrderQuantity(shares)}未成交`);
       return;
     }
     pos.shares -= shares;
-    state.cash += value - fee - tax;
-    if (pos.shares === 0) delete state.positions[stock.symbol];
+    portfolio.cash += value - fee - tax;
+    if (pos.shares === 0) delete portfolio.positions[stock.symbol];
   }
 
   addLog(`${state.side === "buy" ? "買進" : "賣出"} ${stock.symbol} ${stock.name} ${formatOrderQuantity(shares)} @ ${priceFmt.format(fillPrice)}`);
@@ -1952,7 +1996,7 @@ function submitOrder() {
       addLog(`市場衝擊待更新：下一根 K 棒預估 ${state.side === "buy" ? "+" : "-"}${(projection.actualPct * 100).toFixed(2)}% · 成交 ${formatOrderQuantity(shares)}`);
     }
   }
-  if (state.mode === "sim") saveSimPortfolio();
+  savePortfolio();
   state.activeSymbol = stock.symbol;
   renderAll();
 }
@@ -2310,7 +2354,7 @@ function applyNewsImpact(item) {
 }
 
 function renderPositions() {
-  const entries = Object.entries(state.positions);
+  const entries = Object.entries(activePortfolio().positions);
   let equity = 0;
   let pnl = 0;
 
@@ -2385,7 +2429,7 @@ $("submitOrder").addEventListener("click", submitOrder);
 $("symbolSelect").addEventListener("change", (event) => selectStock(event.target.value));
 $("setSimulationCash").addEventListener("click", () => {
   const cash = Math.max(0, Number($("simulationCash").value) || 0);
-  state.cash = cash;
+  state.portfolios.sim.cash = cash;
   addLog(`模擬可用資金設定為 ${money.format(cash)}`);
   saveSimPortfolio();
   renderAll();
@@ -2448,7 +2492,7 @@ window.addEventListener("keydown", onKeyDown);
 state.mode = "real";
 state.chartTimeframe = state.realChartTimeframe;
 syncRouteToMode("real");
-loadSimPortfolio();
+loadPortfolios();
 renderCategoryFilter();
 renderSelectors();
 renderChartControls();
