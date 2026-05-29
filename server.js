@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 
 const root = __dirname;
-const port = Number(process.env.PORT || 3000);
+const preferredPort = Number(process.env.PORT || 3000);
 const mime = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -563,6 +563,20 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(port, () => {
-  console.log(`台股模擬交易台已啟動：http://localhost:${port}`);
-});
+function listen(port, attemptsLeft = 10) {
+  server.once("error", (error) => {
+    if (error.code === "EADDRINUSE" && !process.env.PORT && attemptsLeft > 0) {
+      console.warn(`Port ${port} is already in use, trying ${port + 1}...`);
+      listen(port + 1, attemptsLeft - 1);
+      return;
+    }
+    console.error(error);
+    process.exit(1);
+  });
+
+  server.listen(port, () => {
+    console.log(`台股即時模擬交易已啟動：http://localhost:${port}`);
+  });
+}
+
+listen(preferredPort);

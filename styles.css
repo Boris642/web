@@ -87,6 +87,30 @@ h1 {
   line-height: 1.1;
 }
 
+.title-switch {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.title-switch:hover h1 {
+  color: var(--blue);
+}
+
+.page-mode-badge {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--blue);
+  background: rgba(102, 166, 255, 0.09);
+}
+
 h2 {
   font-size: 18px;
 }
@@ -459,6 +483,11 @@ select {
 .primary-action.sell {
   background: var(--red);
   color: #062119;
+}
+
+.reset-action {
+  width: 100%;
+  margin: -4px 0 14px;
 }
 
 .funding-panel {

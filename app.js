@@ -213,6 +213,266 @@ const state = {
   lastNewsSync: 0
 };
 
+const SIM_PORTFOLIO_KEY = "twse-sim-portfolio-v1";
+
+function loadSimPortfolio() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SIM_PORTFOLIO_KEY) || "{}");
+    if (saved && typeof saved === "object") {
+      if (Number.isFinite(Number(saved.cash))) state.cash = Math.max(0, Number(saved.cash));
+      if (saved.positions && typeof saved.positions === "object") {
+        state.positions = Object.fromEntries(
+          Object.entries(saved.positions)
+            .map(([symbol, pos]) => [
+              symbol,
+              {
+                shares: Math.max(0, Number(pos.shares) || 0),
+                avg: Math.max(0, Number(pos.avg) || 0)
+              }
+            ])
+            .filter(([, pos]) => pos.shares > 0)
+        );
+      }
+    }
+  } catch {
+    localStorage.removeItem(SIM_PORTFOLIO_KEY);
+  }
+}
+
+function saveSimPortfolio() {
+  try {
+    localStorage.setItem(SIM_PORTFOLIO_KEY, JSON.stringify({
+      cash: state.cash,
+      positions: state.positions,
+      savedAt: new Date().toISOString()
+    }));
+  } catch {
+    addLog("模擬持股儲存失敗，請檢查瀏覽器儲存空間");
+  }
+}
+
+function resetSimPortfolio() {
+  state.positions = {};
+  localStorage.setItem(SIM_PORTFOLIO_KEY, JSON.stringify({
+    cash: state.cash,
+    positions: {},
+    savedAt: new Date().toISOString()
+  }));
+  addLog("模擬持股已歸零");
+  renderAll();
+}
+
+function mountReactAppShell() {
+  const root = document.getElementById("appRoot");
+  if (!root || !window.React || !window.ReactDOM) {
+    document.body.innerHTML = "<p style=\"padding:24px;color:white\">React 載入失敗，請先執行 npm install 後重新啟動。</p>";
+    return;
+  }
+
+  const h = React.createElement;
+  const option = (value, label) => h("option", { value }, label);
+
+  function MarketStrip() {
+    return h("section", { className: "market-strip", "aria-label": "台股市場總覽" },
+      h("div", null,
+        h("span", { className: "eyebrow" }, "TWSE SIM"),
+        h("button", { id: "appTitleSwitch", className: "title-switch", type: "button", title: "切換現實股市 / 模擬股市" },
+          h("h1", { id: "appTitle" }, "台股即時模擬交易")
+        ),
+        h("small", { id: "pageModeBadge", className: "page-mode-badge" }, "現實股市頁面")
+      ),
+      h("div", { className: "market-card" },
+        h("span", null, "加權指數"),
+        h("strong", { id: "indexPrice" }, "23,418.52"),
+        h("small", { id: "indexChange", className: "up" }, "+1.28%")
+      ),
+      h("div", { className: "market-card mode-card" },
+        h("label", null,
+          "行情模式",
+          h("select", { id: "marketMode" },
+            option("real", "現實股市"),
+            option("sim", "模擬走勢")
+          )
+        ),
+        h("small", { id: "modeHint" }, "依 TWSE/TPEx 報價同步")
+      ),
+      h("div", { id: "simControlCard", className: "market-card" },
+        h("span", null, "模擬控制"),
+        h("button", { id: "pauseSim", className: "secondary-action", type: "button" }, "暫停模擬"),
+        h("small", { id: "simStatus" }, "每 5 秒更新一根")
+      ),
+      h("div", { className: "market-card" },
+        h("span", null, "同步成交量"),
+        h("strong", { id: "marketVolume" }, "6,980 億"),
+        h("small", { id: "marketStatus" }, "同步中...")
+      ),
+      h("div", { className: "market-card" },
+        h("span", null, "目前時間"),
+        h("strong", { id: "clock" }, "09:00:00"),
+        h("small", null, "台北時間")
+      )
+    );
+  }
+
+  function Watchlist() {
+    return h("aside", { className: "watchlist", "aria-label": "台股清單" },
+      h("div", { className: "panel-head" },
+        h("h2", null, "股票池"),
+        h("button", { id: "shockButton", className: "icon-button", title: "觸發高量波動", "aria-label": "觸發高量波動", type: "button" }, "↯")
+      ),
+      h("label", { className: "filter-label" },
+        "族群篩選",
+        h("select", { id: "categoryFilter" })
+      ),
+      h("div", { id: "stockList", className: "stock-list" })
+    );
+  }
+
+  function ChartPanel() {
+    return h("section", { className: "chart-panel", "aria-label": "走勢圖" },
+      h("div", { className: "panel-head chart-head" },
+        h("div", null,
+          h("h2", { id: "activeName" }, "台積電"),
+          h("p", { id: "activeMeta" }, "2330 · AI · 先進封裝 · 現股")
+        ),
+        h("div", { className: "quote-box" },
+          h("div", { className: "quote-state" },
+            h("span", { id: "activeLimitBadge", className: "limit-badge", hidden: true }),
+            h("span", { id: "activeQueueBadge", className: "queue-badge", hidden: true })
+          ),
+          h("strong", { id: "activePrice" }, "930.00"),
+          h("span", { id: "activeChange", className: "up" }, "+0.00%")
+        )
+      ),
+      h("div", { className: "chart-topbar" },
+        h("div", { id: "timeframeBar", className: "timeframe-bar", role: "group", "aria-label": "圖表週期" },
+          h("button", { className: "timeframe-button active", "data-timeframe": "1h", type: "button" }, "1h"),
+          h("button", { className: "timeframe-button", "data-timeframe": "1d", type: "button" }, "1D"),
+          h("button", { className: "timeframe-button", "data-timeframe": "5d", type: "button" }, "5D"),
+          h("button", { className: "timeframe-button", "data-timeframe": "1m", type: "button" }, "1M")
+        ),
+        h("div", { className: "chart-status" },
+          h("button", { id: "togglePercent", className: "chart-mini-button active", type: "button", "aria-pressed": "true" }, "%"),
+          h("span", null, "百分比軸")
+        )
+      ),
+      h("div", { className: "ma-controls", "aria-label": "均線設定" },
+        h("label", null, h("input", { className: "ma-toggle", type: "checkbox", value: "5", defaultChecked: true }), "5MA"),
+        h("label", null, h("input", { className: "ma-toggle", type: "checkbox", value: "10", defaultChecked: true }), "10MA"),
+        h("label", null, h("input", { className: "ma-toggle", type: "checkbox", value: "20" }), "20MA"),
+        h("label", null, h("input", { className: "ma-toggle", type: "checkbox", value: "60" }), "60MA")
+      ),
+      h("div", { className: "chart-shell" },
+        h("div", { id: "chartStage", className: "chart-stage" },
+          h("canvas", { id: "priceChart", width: "1120", height: "560", "aria-label": "K 線與成交量走勢" }),
+          h("div", { id: "chartTooltip", className: "chart-tooltip", hidden: true })
+        )
+      )
+    );
+  }
+
+  function TradeTicket() {
+    return h("aside", { id: "tradeTicketRoot", className: "trade-ticket", "aria-label": "下單區" },
+      h("div", { className: "panel-head" },
+        h("h2", null, "下單"),
+        h("span", { id: "buyingPower" }, "可用資金 1,000,000")
+      ),
+      h("div", { className: "segmented", role: "group", "aria-label": "買賣方向" },
+        h("button", { id: "buyTab", className: "active", type: "button" }, "買進"),
+        h("button", { id: "sellTab", type: "button" }, "賣出")
+      ),
+      h("label", null, "股票", h("select", { id: "symbolSelect" })),
+      h("label", null, "價格", h("input", { id: "orderPrice", type: "number", min: "1", step: "0.5" })),
+      h("label", null,
+        "數量",
+        h("select", { id: "orderUnit", defaultValue: "share" }, option("share", "股"), option("lot", "張"))
+      ),
+      h("label", null,
+        h("span", { id: "orderQuantityLabel" }, "股數"),
+        h("input", { id: "orderLots", type: "number", min: "1", step: "1", defaultValue: "1" })
+      ),
+      h("label", null,
+        "委託類型",
+        h("select", { id: "orderType", defaultValue: "market" }, option("market", "市價"), option("limit", "限價"))
+      ),
+      h("div", { id: "simFundingPanel", className: "funding-panel" },
+        h("label", null,
+          "模擬可用資金",
+          h("input", { id: "simulationCash", type: "number", min: "0", step: "1000000", defaultValue: "1000000" })
+        ),
+        h("button", { id: "setSimulationCash", className: "secondary-action", type: "button" }, "設定資金")
+      ),
+      h("p", { id: "orderImpact", className: "impact-note" }),
+      h("div", { className: "order-preview" },
+        h("div", null, h("span", null, "換算股數"), h("strong", { id: "previewShares" }, "1 股")),
+        h("div", null, h("span", null, "成交金額"), h("strong", { id: "previewValue" }, "0")),
+        h("div", null, h("span", null, "手續費"), h("strong", { id: "previewFee" }, "0")),
+        h("div", null, h("span", null, "交易稅"), h("strong", { id: "previewTax" }, "0")),
+        h("div", null, h("span", { id: "previewTotalLabel" }, "預估扣款"), h("strong", { id: "previewTotal" }, "0"))
+      ),
+      h("button", { id: "submitOrder", className: "primary-action", type: "button" }, "送出買單"),
+      h("button", { id: "resetSimPortfolio", className: "secondary-action reset-action", type: "button" }, "歸零模擬持股"),
+      h("div", { className: "summary-grid" },
+        h("div", null, h("span", null, "持股市值"), h("strong", { id: "equityValue" }, "0")),
+        h("div", null, h("span", null, "未實現損益"), h("strong", { id: "unrealizedPnl" }, "0"))
+      ),
+      h("div", { className: "log-panel" }, h("h3", null, "成交紀錄"), h("ul", { id: "tradeLog" }))
+    );
+  }
+
+  function NewsPanel() {
+    return h("section", { className: "news-panel", "aria-label": "台股新聞" },
+      h("div", { className: "panel-head" },
+        h("div", null,
+          h("h2", null, "台股新聞"),
+          h("p", null, "新聞會直接套用到模擬行情，利多利空會依市場反應影響相關族群。")
+        ),
+        h("button", { id: "refreshNews", className: "secondary-action", type: "button" }, "更新新聞")
+      ),
+      h("div", { id: "newsList", className: "news-list" })
+    );
+  }
+
+  function PositionsPanel() {
+    return h("section", { className: "positions-panel" },
+      h("div", { className: "panel-head" },
+        h("h2", null, "持倉"),
+        h("span", null, "手續費 0.1425% · 交易稅 0.3%")
+      ),
+      h("div", { className: "table-wrap" },
+        h("table", null,
+          h("thead", null,
+            h("tr", null,
+              h("th", null, "股票"),
+              h("th", null, "股數"),
+              h("th", null, "均價"),
+              h("th", null, "現價"),
+              h("th", null, "市值"),
+              h("th", null, "損益")
+            )
+          ),
+          h("tbody", { id: "positionsBody" },
+            h("tr", null, h("td", { colSpan: "6", className: "empty" }, "尚無持倉"))
+          )
+        )
+      )
+    );
+  }
+
+  function AppShell() {
+    return h("main", { className: "app", "data-react-shell": "true" },
+      h(MarketStrip),
+      h("section", { className: "workspace" }, h(Watchlist), h(ChartPanel), h(TradeTicket)),
+      h(NewsPanel),
+      h(PositionsPanel)
+    );
+  }
+
+  ReactDOM.render(h(AppShell), root);
+}
+
+mountReactAppShell();
+
 const $ = (id) => document.getElementById(id);
 const chart = $("priceChart");
 const tooltip = $("chartTooltip");
@@ -284,6 +544,20 @@ function quoteStillTrading(index) {
 
 function modeKey(mode = state.mode) {
   return mode === "real" ? "real" : "sim";
+}
+
+function routeMode() {
+  return location.hash === "#sim" ? "sim" : "real";
+}
+
+function pageTitleForMode(mode = state.mode) {
+  return mode === "sim" ? "台股模擬交易" : "台股即時行情";
+}
+
+function syncRouteToMode(mode = state.mode) {
+  const nextHash = mode === "sim" ? "#sim" : "#real";
+  if (location.hash !== nextHash) history.replaceState(null, "", nextHash);
+  document.body.dataset.page = mode;
 }
 
 function candlesFor(stock, mode = state.mode) {
@@ -643,12 +917,18 @@ function renderHeader() {
   $("indexChange").className = indexChange >= 0 ? "up" : "down";
   $("marketVolume").textContent = `${money.format(volumeE)} 億`;
   $("marketStatus").textContent = marketStatusText();
+  $("marketMode").value = state.mode;
   $("modeHint").textContent = state.mode === "real"
     ? "依 TWSE/TPEx 報價同步"
     : "使用新聞與隨機波動推進";
+  $("appTitle").textContent = pageTitleForMode();
+  $("pageModeBadge").textContent = state.mode === "sim" ? "模擬股市頁面" : "現實股市頁面";
+  $("appTitleSwitch").setAttribute("aria-label", `目前是${state.mode === "sim" ? "模擬股市" : "現實股市"}，點擊切換頁面`);
+  syncRouteToMode();
   $("simControlCard").hidden = state.mode !== "sim";
   $("simFundingPanel").hidden = state.mode !== "sim";
   $("orderImpact").hidden = state.mode !== "sim";
+  $("resetSimPortfolio").hidden = state.mode !== "sim";
   $("timeframeBar").hidden = state.mode === "sim";
   $("pauseSim").textContent = state.simPaused ? "繼續模擬" : "暫停模擬";
   $("simStatus").textContent = state.simPaused ? "模擬已暫停" : "每 5 秒更新一根";
@@ -670,6 +950,9 @@ function renderHeader() {
     $("orderPrice").value = priceFor(stock);
   }
   $("buyingPower").textContent = `可用資金 ${money.format(state.cash)}`;
+  if ($("simulationCash") && document.activeElement !== $("simulationCash")) {
+    $("simulationCash").value = state.cash;
+  }
   renderOrderImpactPreview();
   $("togglePercent").classList.toggle("active", state.showPercentAxis);
   $("togglePercent").setAttribute("aria-pressed", String(state.showPercentAxis));
@@ -1669,6 +1952,7 @@ function submitOrder() {
       addLog(`市場衝擊待更新：下一根 K 棒預估 ${state.side === "buy" ? "+" : "-"}${(projection.actualPct * 100).toFixed(2)}% · 成交 ${formatOrderQuantity(shares)}`);
     }
   }
+  if (state.mode === "sim") saveSimPortfolio();
   state.activeSymbol = stock.symbol;
   renderAll();
 }
@@ -2103,8 +2387,10 @@ $("setSimulationCash").addEventListener("click", () => {
   const cash = Math.max(0, Number($("simulationCash").value) || 0);
   state.cash = cash;
   addLog(`模擬可用資金設定為 ${money.format(cash)}`);
+  saveSimPortfolio();
   renderAll();
 });
+$("resetSimPortfolio").addEventListener("click", resetSimPortfolio);
 $("orderUnit").addEventListener("change", (event) => setOrderUnit(event.target.value));
 $("orderPrice").addEventListener("input", () => {
   renderOrderPreview();
@@ -2123,6 +2409,11 @@ $("categoryFilter").addEventListener("change", (event) => {
   renderWatchlist();
 });
 $("marketMode").addEventListener("change", (event) => setMarketMode(event.target.value));
+$("appTitleSwitch").addEventListener("click", () => setMarketMode(state.mode === "real" ? "sim" : "real"));
+window.addEventListener("hashchange", () => {
+  const nextMode = routeMode();
+  if (nextMode !== state.mode) setMarketMode(nextMode);
+});
 $("shockButton").addEventListener("click", () => {
   state.shock = 3.8;
   addLog("市場高量波動已觸發");
@@ -2154,6 +2445,10 @@ chart.addEventListener("wheel", onChartWheel, { passive: false });
 window.addEventListener("mouseup", onChartDragEnd);
 window.addEventListener("keydown", onKeyDown);
 
+state.mode = "real";
+state.chartTimeframe = state.realChartTimeframe;
+syncRouteToMode("real");
+loadSimPortfolio();
 renderCategoryFilter();
 renderSelectors();
 renderChartControls();
