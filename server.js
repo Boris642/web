@@ -125,6 +125,10 @@ async function fetchMarket(symbols) {
   }
 }
 
+function isMarketIndexSymbol(symbol) {
+  return ["TAIEX", "^TWII", "t00"].includes(String(symbol || "").trim());
+}
+
 async function fetchTwseMarket(symbols) {
   const uniqueSymbols = [...new Set(symbols)].filter(Boolean);
   const channels = uniqueSymbols.flatMap((symbol) => [`tse_${symbol}.tw`, `otc_${symbol}.tw`]);
@@ -249,6 +253,7 @@ async function fetchYahooQuote(symbol, suffix) {
 }
 
 async function fetchHistory(symbol) {
+  if (isMarketIndexSymbol(symbol)) return fetchYahooHistory("^TWII", "");
   const yahooTw = await fetchYahooHistory(symbol, "TW");
   if (yahooTw.candles.length > 0) return yahooTw;
   const yahooTwo = await fetchYahooHistory(symbol, "TWO");
@@ -259,19 +264,22 @@ async function fetchHistory(symbol) {
 }
 
 async function fetchIntraday(symbol) {
+  if (isMarketIndexSymbol(symbol)) return fetchYahooIntraday("^TWII", "");
   const yahooTw = await fetchYahooIntraday(symbol, "TW");
   if (yahooTw.candles.length > 0) return yahooTw;
   return fetchYahooIntraday(symbol, "TWO");
 }
 
 async function fetchHourly(symbol) {
+  if (isMarketIndexSymbol(symbol)) return fetchYahooRange("^TWII", "", "3mo", "60m");
   const yahooTw = await fetchYahooRange(symbol, "TW", "3mo", "60m");
   if (yahooTw.candles.length > 0) return yahooTw;
   return fetchYahooRange(symbol, "TWO", "3mo", "60m");
 }
 
 async function fetchYahooHistory(symbol, suffix) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(`${symbol}.${suffix}`)}?range=2y&interval=1d&events=history`;
+  const target = suffix ? `${symbol}.${suffix}` : symbol;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(target)}?range=2y&interval=1d&events=history`;
   try {
     const data = await fetchJson(url);
     const result = data.chart?.result?.[0];
@@ -294,14 +302,15 @@ async function fetchYahooHistory(symbol, suffix) {
         };
       })
       .filter(Boolean);
-    return { symbol, candles: rows.slice(-520), source: `Yahoo Finance ${symbol}.${suffix}` };
+    return { symbol, candles: rows.slice(-520), source: `Yahoo Finance ${target}` };
   } catch {
-    return { symbol, candles: [], source: `Yahoo Finance ${symbol}.${suffix}` };
+    return { symbol, candles: [], source: `Yahoo Finance ${target}` };
   }
 }
 
 async function fetchYahooIntraday(symbol, suffix) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(`${symbol}.${suffix}`)}?range=1d&interval=1m&includePrePost=false`;
+  const target = suffix ? `${symbol}.${suffix}` : symbol;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(target)}?range=1d&interval=1m&includePrePost=false`;
   try {
     const data = await fetchJson(url);
     const result = data.chart?.result?.[0];
@@ -329,14 +338,15 @@ async function fetchYahooIntraday(symbol, suffix) {
         };
       })
       .filter(Boolean);
-    return { symbol, candles: rows.slice(-270), source: `Yahoo Finance intraday ${symbol}.${suffix}` };
+    return { symbol, candles: rows.slice(-270), source: `Yahoo Finance intraday ${target}` };
   } catch {
-    return { symbol, candles: [], source: `Yahoo Finance intraday ${symbol}.${suffix}` };
+    return { symbol, candles: [], source: `Yahoo Finance intraday ${target}` };
   }
 }
 
 async function fetchYahooRange(symbol, suffix, range, interval) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(`${symbol}.${suffix}`)}?range=${encodeURIComponent(range)}&interval=${encodeURIComponent(interval)}&includePrePost=false&events=history`;
+  const target = suffix ? `${symbol}.${suffix}` : symbol;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(target)}?range=${encodeURIComponent(range)}&interval=${encodeURIComponent(interval)}&includePrePost=false&events=history`;
   try {
     const data = await fetchJson(url);
     const result = data.chart?.result?.[0];
@@ -364,9 +374,9 @@ async function fetchYahooRange(symbol, suffix, range, interval) {
         };
       })
       .filter(Boolean);
-    return { symbol, candles: rows, source: `Yahoo Finance ${range} ${interval} ${symbol}.${suffix}` };
+    return { symbol, candles: rows, source: `Yahoo Finance ${range} ${interval} ${target}` };
   } catch {
-    return { symbol, candles: [], source: `Yahoo Finance ${range} ${interval} ${symbol}.${suffix}` };
+    return { symbol, candles: [], source: `Yahoo Finance ${range} ${interval} ${target}` };
   }
 }
 

@@ -1,4 +1,5 @@
 const stocks = [
+  { symbol: "TAIEX", name: "加權指數", sector: "大盤指數", group: "指數", price: 21600, volatility: 0.006, drift: 0.0002, baseVolume: 0, isIndex: true },
   { symbol: "2330", name: "台積電", sector: "先進封裝", group: "AI", price: 2185, volatility: 0.008, drift: 0.0008, baseVolume: 92000 },
   { symbol: "3711", name: "日月光投控", sector: "先進封裝", group: "AI", price: 218, volatility: 0.011, drift: 0.0005, baseVolume: 52000 },
   { symbol: "6451", name: "訊芯-KY", sector: "先進封裝", group: "AI", price: 236, volatility: 0.018, drift: 0.0004, baseVolume: 12500 },
@@ -84,6 +85,7 @@ const stocks = [
 ];
 
 const stockCategories = [
+  { value: "指數", label: "指數" },
   { value: "holdings", label: "持股" },
   { value: "all", label: "全部" },
   { value: "航運", label: "航運" },
@@ -186,7 +188,7 @@ const timeframeOptions = [
 ];
 
 const state = {
-  activeSymbol: "2330",
+  activeSymbol: "TAIEX",
   side: "buy",
   portfolios: {
     real: { cash: 1000000, positions: {} },
@@ -1000,6 +1002,12 @@ function renderHeader() {
   $("togglePercent").classList.toggle("active", state.showPercentAxis);
   $("togglePercent").setAttribute("aria-pressed", String(state.showPercentAxis));
   renderOrderPreview();
+  $("submitOrder").disabled = Boolean(stock.isIndex);
+  if (stock.isIndex) {
+    $("submitOrder").textContent = "指數僅供查看";
+  } else {
+    $("submitOrder").textContent = state.side === "buy" ? "送出買單" : "送出賣單";
+  }
 }
 
 function drawChart() {
@@ -1947,6 +1955,10 @@ function applySimulatedOrderImpact(stock, value, impactPct, shares) {
 
 function submitOrder() {
   const stock = stocks.find((item) => item.symbol === $("symbolSelect").value);
+  if (stock?.isIndex) {
+    addLog("加權指數僅供查看，不能直接下單");
+    return;
+  }
   const portfolio = activePortfolio();
   const shares = sharesFromOrderInput();
   const orderType = $("orderType").value;
@@ -2136,6 +2148,24 @@ function applyQuote(stock, quote) {
   }
 }
 
+function applyIndexQuote(index) {
+  const stock = stocks.find((item) => item.symbol === "TAIEX");
+  if (!stock || !index?.price) return;
+  state.realIndex = index;
+  applyQuote(stock, {
+    symbol: "TAIEX",
+    name: "加權指數",
+    price: index.price,
+    previousClose: index.previousClose,
+    open: index.previousClose,
+    high: Math.max(index.price, index.previousClose || index.price),
+    low: Math.min(index.price, index.previousClose || index.price),
+    volume: 1,
+    date: index.date,
+    time: index.time
+  });
+}
+
 async function syncMarket() {
   if (state.mode !== "real") return;
   if (state.marketSyncInFlight) return;
@@ -2143,7 +2173,7 @@ async function syncMarket() {
   try {
     state.marketSyncInFlight = true;
     renderAll();
-    const symbols = stocks.map((stock) => stock.symbol).join(",");
+    const symbols = stocks.filter((stock) => !stock.isIndex).map((stock) => stock.symbol).join(",");
     const response = await fetch(`/api/market?symbols=${encodeURIComponent(symbols)}&_=${Date.now()}`, { cache: "no-store" });
     if (!response.ok) throw new Error("market api failed");
     const data = await response.json();
@@ -2157,10 +2187,10 @@ async function syncMarket() {
       const quote = quotes.get(stock.symbol);
       if (quote) applyQuote(stock, quote);
     });
-    if (data.index?.price) state.realIndex = data.index;
+    if (data.index?.price) applyIndexQuote(data.index);
     state.realSync = quotes.size > 0;
     state.lastMarketSync = Date.now();
-    const activeQuote = quotes.get(state.activeSymbol);
+    const activeQuote = state.activeSymbol === "TAIEX" ? data.index : quotes.get(state.activeSymbol);
     state.lastQuoteTime = activeQuote?.time || data.index?.time || "";
     if (state.mode === "real") {
       const active = activeStock();
@@ -2265,7 +2295,9 @@ async function syncNews() {
     });
     if (!response.ok) throw new Error("news api failed");
     const data = await response.json();
-    state.news = (data.news || []).slice(0, 9).map((item) => ({
+    const realNews = data.news || [];
+    if (realNews.length === 0) throw new Error("news api returned no items");
+    state.news = realNews.slice(0, 9).map((item) => ({
       ...item,
       used: true,
       time: parseNewsTime(item.time)
@@ -2276,8 +2308,20 @@ async function syncNews() {
     renderNews();
     renderAll();
   } catch (error) {
+    if (state.mode === "real") {
+      showRealNewsUnavailable();
+      return;
+    }
     generateFallbackNews();
   }
+}
+
+function showRealNewsUnavailable() {
+  state.news = [];
+  state.lastNewsSync = Date.now();
+  $("newsList").innerHTML = `<div class="empty news-empty">目前無法取得新聞</div>`;
+  addLog("現實新聞目前無法取得，已停止使用離線假新聞備援");
+  renderAll();
 }
 
 function generateFallbackNews() {

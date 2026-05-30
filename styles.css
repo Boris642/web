@@ -315,6 +315,12 @@ h3 {
   color: var(--muted);
 }
 
+.news-empty {
+  grid-column: 1 / -1;
+  padding: 22px 12px;
+  color: var(--muted);
+}
+
 .stock-limit-pill {
   display: inline-block;
   margin-top: 5px;
