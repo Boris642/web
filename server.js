@@ -538,6 +538,10 @@ function readBody(req) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   try {
+    if (url.pathname === "/healthz") {
+      sendJson(res, { ok: true, uptime: Math.round(process.uptime()), timestamp: new Date().toISOString() });
+      return;
+    }
     if (url.pathname === "/api/market") {
       const symbols = (url.searchParams.get("symbols") || "").split(",");
       sendJson(res, await fetchMarket(symbols));
