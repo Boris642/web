@@ -209,6 +209,7 @@ const state = {
   chartDragging: false,
   dragAnchorX: 0,
   simPaused: false,
+  simTime: Date.now(),
   news: [],
   realSync: false,
   marketOpen: false,
@@ -338,7 +339,7 @@ function mountReactAppShell() {
       h("div", { id: "simControlCard", className: "market-card" },
         h("span", null, "模擬控制"),
         h("button", { id: "pauseSim", className: "secondary-action", type: "button" }, "暫停模擬"),
-        h("small", { id: "simStatus" }, "每 5 秒更新一根")
+        h("small", { id: "simStatus" }, "每 5 秒推進 30 分鐘")
       ),
       h("div", { className: "market-card" },
         h("span", null, "同步成交量"),
@@ -642,7 +643,7 @@ function buildCandles(stock) {
     const low = roundTick(Math.min(open, close) * (1 - Math.random() * stock.volatility * 1.6));
     const volumeBoost = 1.25 + Math.abs(move) * 92 + (i > 65 ? 0.35 : 0);
     const volume = Math.round(stock.baseVolume * volumeBoost * (0.75 + Math.random() * 0.7));
-    const stamp = new Date(now - (87 - i) * 5 * 60 * 1000).toLocaleString("sv-SE", {
+    const stamp = new Date(now - (87 - i) * 30 * 60 * 1000).toLocaleString("sv-SE", {
       hour12: false,
       timeZone: "Asia/Taipei"
     }).replace(" ", " ");
@@ -661,6 +662,15 @@ function buildCandles(stock) {
 }
 
 stocks.forEach(buildCandles);
+state.simTime = Math.max(...stocks.map((stock) => new Date(String(stock.simCandles?.at(-1)?.time || "").replace(" ", "T")).getTime()).filter(Number.isFinite));
+
+function advanceSimTime() {
+  state.simTime = (Number.isFinite(state.simTime) ? state.simTime : Date.now()) + 30 * 60 * 1000;
+  return new Date(state.simTime).toLocaleString("sv-SE", {
+    hour12: false,
+    timeZone: "Asia/Taipei"
+  }).slice(0, 16);
+}
 
 function timeframeConfig(value = state.chartTimeframe) {
   return timeframeOptions.find((option) => option.value === value) || timeframeOptions.at(-1);
@@ -824,6 +834,7 @@ function tickMarket() {
     return;
   }
 
+  const simStamp = advanceSimTime();
   stocks.forEach((stock) => {
     const candles = candlesFor(stock, "sim");
     const last = candles.at(-1);
@@ -847,7 +858,7 @@ function tickMarket() {
       low,
       close,
       volume,
-      time: new Date().toLocaleString("sv-SE", { hour12: false, timeZone: "Asia/Taipei" }).slice(0, 16)
+      time: simStamp
     });
     stock.simCandles = candles.slice(-88);
     stock.simPrice = close;
@@ -977,7 +988,7 @@ function renderHeader() {
   $("resetSimPortfolio").hidden = state.mode !== "sim";
   $("timeframeBar").hidden = state.mode === "sim";
   $("pauseSim").textContent = state.simPaused ? "繼續模擬" : "暫停模擬";
-  $("simStatus").textContent = state.simPaused ? "模擬已暫停" : "每 5 秒更新一根";
+  $("simStatus").textContent = state.simPaused ? "模擬已暫停" : "每 5 秒推進 30 分鐘";
   $("clock").textContent = new Date().toLocaleTimeString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" });
   $("activeName").textContent = stock.name;
   $("activeMeta").textContent = `${stock.symbol} · ${stock.group} · ${stock.sector} · 現股`;
@@ -2363,6 +2374,11 @@ async function loadRealHourly(stock, force = false) {
 }
 
 async function syncNews() {
+  if (state.mode === "sim") {
+    generateFallbackNews();
+    return;
+  }
+
   try {
     const stockPayload = stocks.map(({ symbol, name, sector, group }) => ({ symbol, name, sector, group }));
     const response = await fetch("/api/news", {
@@ -2407,6 +2423,7 @@ function generateFallbackNews() {
   state.news = pool.map((item, index) => ({
     ...item,
     id: `fallback-${Date.now()}-${index}`,
+    ...simulatedNewsTone(item, index),
     used: true,
     source: "離線備援",
     link: "",
@@ -2418,10 +2435,26 @@ function generateFallbackNews() {
   renderAll();
 }
 
+function simulatedNewsTone(item, index) {
+  if ((Date.now() + index) % 5 === 0) {
+    return { impact: 0, tone: "中性", volumeBoost: Math.max(1.1, Math.min(1.4, item.volumeBoost || 1.2)) };
+  }
+  if ((item.impact || 0) > 0.0005) return { tone: "利多" };
+  if ((item.impact || 0) < -0.0005) return { tone: "利空" };
+  return { tone: "中性", impact: 0 };
+}
+
+function newsToneClass(item) {
+  const impact = Number(item.impact) || 0;
+  if (impact > 0.0005) return "news-positive";
+  if (impact < -0.0005) return "news-negative";
+  return "news-neutral";
+}
+
 function renderNews() {
   $("newsList").innerHTML = state.news
     .map((item) => {
-      const impactClass = item.impact >= 0 ? "up" : "down";
+      const impactClass = newsToneClass(item);
       const symbolTags = item.symbols
         .map((symbol) => {
           const stock = stocks.find((entry) => entry.symbol === symbol);

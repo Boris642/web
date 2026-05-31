@@ -292,6 +292,18 @@ h3 {
   color: var(--red);
 }
 
+.news-positive {
+  color: var(--red);
+}
+
+.news-negative {
+  color: var(--green);
+}
+
+.news-neutral {
+  color: var(--text);
+}
+
 .icon-button {
   width: 36px;
   height: 36px;
