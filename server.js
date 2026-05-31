@@ -4,6 +4,8 @@ const path = require("path");
 
 const root = __dirname;
 const preferredPort = Number(process.env.PORT || 3000);
+const HISTORY_DAILY_LIMIT = 1250;
+const INTRADAY_MINUTE_LIMIT = 1400;
 const mime = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -279,7 +281,7 @@ async function fetchHourly(symbol) {
 
 async function fetchYahooHistory(symbol, suffix) {
   const target = suffix ? `${symbol}.${suffix}` : symbol;
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(target)}?range=2y&interval=1d&events=history`;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(target)}?range=5y&interval=1d&events=history`;
   try {
     const data = await fetchJson(url);
     const result = data.chart?.result?.[0];
@@ -302,7 +304,7 @@ async function fetchYahooHistory(symbol, suffix) {
         };
       })
       .filter(Boolean);
-    return { symbol, candles: rows.slice(-520), source: `Yahoo Finance ${target}` };
+    return { symbol, candles: rows.slice(-HISTORY_DAILY_LIMIT), source: `Yahoo Finance ${target}` };
   } catch {
     return { symbol, candles: [], source: `Yahoo Finance ${target}` };
   }
@@ -310,7 +312,7 @@ async function fetchYahooHistory(symbol, suffix) {
 
 async function fetchYahooIntraday(symbol, suffix) {
   const target = suffix ? `${symbol}.${suffix}` : symbol;
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(target)}?range=1d&interval=1m&includePrePost=false`;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(target)}?range=5d&interval=1m&includePrePost=false`;
   try {
     const data = await fetchJson(url);
     const result = data.chart?.result?.[0];
@@ -338,7 +340,7 @@ async function fetchYahooIntraday(symbol, suffix) {
         };
       })
       .filter(Boolean);
-    return { symbol, candles: rows.slice(-270), source: `Yahoo Finance intraday ${target}` };
+    return { symbol, candles: rows.slice(-INTRADAY_MINUTE_LIMIT), source: `Yahoo Finance intraday ${target}` };
   } catch {
     return { symbol, candles: [], source: `Yahoo Finance intraday ${target}` };
   }
@@ -383,7 +385,7 @@ async function fetchYahooRange(symbol, suffix, range, interval) {
 async function fetchTwseHistory(symbol) {
   const rows = [];
   const now = new Date();
-  for (let offset = -23; offset <= 0; offset += 1) {
+  for (let offset = -59; offset <= 0; offset += 1) {
     const month = addMonths(now, offset);
     const url = `https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?response=json&date=${yyyymmdd(month)}&stockNo=${encodeURIComponent(symbol)}`;
     try {
@@ -408,13 +410,13 @@ async function fetchTwseHistory(symbol) {
     }
   }
   const unique = new Map(rows.map((row) => [row.time, row]));
-  return { symbol, candles: [...unique.values()].sort((a, b) => a.time.localeCompare(b.time)).slice(-520), source: "TWSE STOCK_DAY" };
+  return { symbol, candles: [...unique.values()].sort((a, b) => a.time.localeCompare(b.time)).slice(-HISTORY_DAILY_LIMIT), source: "TWSE STOCK_DAY" };
 }
 
 async function fetchTpexHistory(symbol) {
   const rows = [];
   const now = new Date();
-  for (let offset = -23; offset <= 0; offset += 1) {
+  for (let offset = -59; offset <= 0; offset += 1) {
     const month = addMonths(now, offset);
     const rocYear = month.getFullYear() - 1911;
     const rocMonth = String(month.getMonth() + 1).padStart(2, "0");
@@ -441,7 +443,7 @@ async function fetchTpexHistory(symbol) {
     }
   }
   const unique = new Map(rows.map((row) => [row.time, row]));
-  return { symbol, candles: [...unique.values()].sort((a, b) => a.time.localeCompare(b.time)).slice(-520), source: "TPEx st43_result" };
+  return { symbol, candles: [...unique.values()].sort((a, b) => a.time.localeCompare(b.time)).slice(-HISTORY_DAILY_LIMIT), source: "TPEx st43_result" };
 }
 
 function decodeXml(text) {

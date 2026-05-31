@@ -188,6 +188,10 @@ const timeframeOptions = [
   { value: "1m", label: "1M", tradingDays: 20, source: "daily" }
 ];
 
+const SIM_HISTORY_BARS = 4320;
+const REAL_DAILY_HISTORY_BARS = 1250;
+const REAL_INTRADAY_HISTORY_BARS = 1400;
+
 const state = {
   activeSymbol: "TAIEX",
   side: "buy",
@@ -664,7 +668,7 @@ function buildCandles(stock) {
   const candles = [];
   const now = Date.now();
   let price = stock.price * (0.985 + Math.random() * 0.03);
-  for (let i = 0; i < 88; i += 1) {
+  for (let i = 0; i < SIM_HISTORY_BARS; i += 1) {
     const pulse = Math.sin(i / 7) * stock.volatility * 0.9;
     const move = stock.drift + pulse + randomNormal() * stock.volatility;
     const open = price;
@@ -673,7 +677,7 @@ function buildCandles(stock) {
     const low = roundTick(Math.min(open, close) * (1 - Math.random() * stock.volatility * 1.6));
     const volumeBoost = 1.25 + Math.abs(move) * 92 + (i > 65 ? 0.35 : 0);
     const volume = Math.round(stock.baseVolume * volumeBoost * (0.75 + Math.random() * 0.7));
-    const stamp = new Date(now - (87 - i) * 30 * 60 * 1000).toLocaleString("sv-SE", {
+    const stamp = new Date(now - (SIM_HISTORY_BARS - 1 - i) * 30 * 60 * 1000).toLocaleString("sv-SE", {
       hour12: false,
       timeZone: "Asia/Taipei"
     }).replace(" ", " ");
@@ -952,7 +956,7 @@ function tickMarket() {
       volume,
       time: simClock.stamp
     });
-    stock.simCandles = candles.slice(-88);
+    stock.simCandles = candles.slice(-SIM_HISTORY_BARS);
     stock.simPrice = close;
     stock.newsImpulse = newsImpulse * 0.72;
     stock.newsVolume = 1 + (newsVolume - 1) * 0.68;
@@ -1334,7 +1338,9 @@ function normalizeIntradayCandles(candles) {
         volume: Math.max(existing.volume || 0, candle.volume || 0)
       });
     });
-  return [...byMinute.values()].sort((a, b) => String(a.time).localeCompare(String(b.time))).slice(-270);
+  return [...byMinute.values()]
+    .sort((a, b) => String(a.time).localeCompare(String(b.time)))
+    .slice(-REAL_INTRADAY_HISTORY_BARS);
 }
 
 function compactFlatIntraday(candles) {
@@ -1474,6 +1480,7 @@ function chartPointFromEvent(event, allowOutside = false) {
 }
 
 function setChartTimeframe(timeframe) {
+  if (state.mode === "sim" && !["1h", "1d"].includes(timeframe)) return;
   state.chartTimeframe = timeframe;
   if (state.mode === "real") state.realChartTimeframe = timeframe;
   const stock = activeStock();
@@ -1487,7 +1494,12 @@ function setChartTimeframe(timeframe) {
 }
 
 function renderChartControls() {
+  if (state.mode === "sim" && !["1h", "1d"].includes(state.chartTimeframe)) {
+    state.chartTimeframe = "1h";
+  }
   document.querySelectorAll(".timeframe-button").forEach((button) => {
+    const hiddenInSim = state.mode === "sim" && !["1h", "1d"].includes(button.dataset.timeframe);
+    button.hidden = hiddenInSim;
     button.classList.toggle("active", button.dataset.timeframe === state.chartTimeframe);
   });
   chart.style.cursor = state.chartDragging ? "grabbing" : "grab";
@@ -2380,7 +2392,7 @@ function applyQuote(stock, quote) {
     stock.realCandles[stock.realCandles.length - 1] = candle;
   } else {
     stock.realCandles.push(candle);
-    stock.realCandles = stock.realCandles.slice(-88);
+    stock.realCandles = stock.realCandles.slice(-REAL_DAILY_HISTORY_BARS);
     stock.lastQuoteStamp = quoteStamp;
   }
 }
