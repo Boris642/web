@@ -2105,6 +2105,27 @@ function synthesizeHourlyVolumes(stock, candles, force = false) {
   });
 }
 
+function referenceVolume(stock) {
+  const candidates = [
+    ...(stock.realCandles || []),
+    ...(stock.realHourlyCandles || [])
+  ]
+    .map((candle) => Number(candle.volume) || 0)
+    .filter((volume) => volume > 1)
+    .sort((a, b) => a - b);
+  if (candidates.length === 0) return Math.max(1, Number(stock.baseVolume) || 1);
+  return candidates[Math.floor(candidates.length / 2)];
+}
+
+function normalizeQuoteVolume(stock, value) {
+  let volume = Math.max(0, Number(value) || 0);
+  const reference = Math.max(1, referenceVolume(stock));
+  while (volume > reference * 80 && volume >= 1000) {
+    volume /= 1000;
+  }
+  return Math.round(volume);
+}
+
 function minuteStamp(quote) {
   if (!quote?.date || !quote?.time) return new Date().toLocaleString("zh-TW", { hour12: false });
   return `${quote.date.slice(0, 4)}-${quote.date.slice(4, 6)}-${quote.date.slice(6, 8)} ${quote.time.slice(0, 5)}`;
@@ -2115,9 +2136,10 @@ function applyLiveQuote(stock, quote, price) {
   if (!state.marketOpen && !quoteFresh) return;
   const stamp = minuteStamp(quote);
   const live = stock.realLiveCandles || [];
-  const cumulativeVolume = Number(quote.volume) || 0;
+  const cumulativeVolume = normalizeQuoteVolume(stock, quote.volume);
   const volumeDelta = Math.max(0, cumulativeVolume - (stock.lastCumulativeVolume || 0));
-  const volume = quote.temporalVolume || volumeDelta || 0;
+  const temporalVolume = quote.temporalVolume ? normalizeQuoteVolume(stock, quote.temporalVolume) : 0;
+  const volume = temporalVolume || volumeDelta || 0;
   stock.lastCumulativeVolume = cumulativeVolume || stock.lastCumulativeVolume;
   const existingIndex = live.findIndex((candle) => candle.time === stamp);
 
@@ -2166,7 +2188,7 @@ function applyQuote(stock, quote) {
   const lastClose = last?.close ?? previousClose;
   const high = Math.max(quote.high || price, price, open, lastClose);
   const low = Math.min(quote.low || price, price, open, lastClose);
-  const volume = quote.volume || last.volume;
+  const volume = normalizeQuoteVolume(stock, quote.volume || last.volume);
   const candle = {
     open: lastClose,
     high: roundTick(high),

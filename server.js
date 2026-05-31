@@ -242,7 +242,7 @@ async function fetchYahooQuote(symbol, suffix) {
       high: normalizePrice(meta.regularMarketDayHigh ?? quote.high?.[lastIndex]),
       low: normalizePrice(meta.regularMarketDayLow ?? quote.low?.[lastIndex]),
       previousClose,
-      volume: Number(meta.regularMarketVolume ?? quote.volume?.[lastIndex]) || null,
+      volume: Math.round((Number(meta.regularMarketVolume ?? quote.volume?.[lastIndex]) || 0) / 1000) || null,
       temporalVolume: null,
       date: taipeiDate.replace(/-/g, ""),
       time: taipeiTime
