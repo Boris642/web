@@ -1,5 +1,5 @@
 const stocks = [
-  { symbol: "TAIEX", name: "加權指數", sector: "大盤指數", group: "指數", price: 21600, volatility: 0.006, drift: 0.0002, baseVolume: 0, isIndex: true },
+  { symbol: "TAIEX", name: "加權指數", sector: "大盤指數", group: "指數", price: 21600, volatility: 0.006, drift: 0.0002, baseVolume: 2600000, isIndex: true },
   { symbol: "2330", name: "台積電", sector: "先進封裝", group: "AI", price: 2185, volatility: 0.008, drift: 0.0008, baseVolume: 92000 },
   { symbol: "3711", name: "日月光投控", sector: "先進封裝", group: "AI", price: 218, volatility: 0.011, drift: 0.0005, baseVolume: 52000 },
   { symbol: "6451", name: "訊芯-KY", sector: "先進封裝", group: "AI", price: 236, volatility: 0.018, drift: 0.0004, baseVolume: 12500 },
@@ -949,13 +949,14 @@ function renderHeader() {
   const stock = activeStock();
   const change = changePct(stock);
   const limitState = simulatedLimitState(stock);
-  const marketValue = stocks.reduce((sum, item) => sum + priceFor(item) * item.baseVolume, 0);
-  const openValue = stocks.reduce((sum, item) => sum + openFor(item) * item.baseVolume, 0);
+  const marketStocks = stocks.filter((item) => !item.isIndex);
+  const marketValue = marketStocks.reduce((sum, item) => sum + priceFor(item) * item.baseVolume, 0);
+  const openValue = marketStocks.reduce((sum, item) => sum + openFor(item) * item.baseVolume, 0);
   const index = state.mode === "real" && state.realIndex?.price ? state.realIndex.price : state.indexBase * (marketValue / openValue);
   const indexChange = state.mode === "real" && state.realIndex?.previousClose
     ? ((state.realIndex.price - state.realIndex.previousClose) / state.realIndex.previousClose) * 100
     : ((marketValue - openValue) / openValue) * 100;
-  const volumeE = stocks.reduce((sum, item) => sum + volumeFor(item) * priceFor(item) * 1000, 0) / 100000000;
+  const volumeE = marketStocks.reduce((sum, item) => sum + volumeFor(item) * priceFor(item) * 1000, 0) / 100000000;
 
   $("indexPrice").textContent = priceFmt.format(index);
   $("indexChange").textContent = formatSignedPct(indexChange);
@@ -1044,7 +1045,7 @@ function drawChart() {
   const maValues = maSeries.flatMap((series) => series.values.filter((value) => value !== null));
   const maxPrice = Math.max(...highs, ...maValues);
   const minPrice = Math.min(...lows, ...maValues);
-  const maxVolume = Math.max(...candles.map((c) => c.volume));
+  const maxVolume = Math.max(1, ...candles.map((c) => c.volume || 0));
   const baseline = baselinePriceForChart(stock, candles);
   chartHoverData = {
     type: "candles",
@@ -2049,6 +2050,40 @@ function normalizeRealCandles(candles) {
     ));
 }
 
+function seededVolumeRatio(seed) {
+  let hash = 2166136261;
+  String(seed).split("").forEach((char) => {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  });
+  return ((hash >>> 0) % 1000) / 1000;
+}
+
+function hourlyVolumeWeight(candle) {
+  const minute = minuteOfDayFromCandle(candle);
+  if (minute < 10 * 60) return 0.24;
+  if (minute < 11 * 60) return 0.17;
+  if (minute < 12 * 60) return 0.14;
+  if (minute < 13 * 60) return 0.16;
+  return 0.22;
+}
+
+function synthesizeHourlyVolumes(stock, candles) {
+  if (!Array.isArray(candles) || candles.length === 0) return candles || [];
+  const maxVolume = Math.max(...candles.map((candle) => Number(candle.volume) || 0));
+  const uniqueVolumeCount = new Set(candles.map((candle) => Number(candle.volume) || 0)).size;
+  if (maxVolume > 1 || uniqueVolumeCount > 2) return candles;
+
+  const baseVolume = Math.max(1200, Number(stock.baseVolume) || 1200);
+  return candles.map((candle, index) => {
+    const open = Number(candle.open) || Number(candle.close) || 1;
+    const move = Math.abs((Number(candle.close) || open) - open) / Math.max(1, open);
+    const noise = 0.72 + seededVolumeRatio(`${stock.symbol}:${candle.time}:${index}`) * 0.56;
+    const volume = Math.max(1, Math.round(baseVolume * hourlyVolumeWeight(candle) * noise * (0.36 + move * 32)));
+    return { ...candle, volume };
+  });
+}
+
 function minuteStamp(quote) {
   if (!quote?.date || !quote?.time) return new Date().toLocaleString("zh-TW", { hour12: false });
   return `${quote.date.slice(0, 4)}-${quote.date.slice(4, 6)}-${quote.date.slice(6, 8)} ${quote.time.slice(0, 5)}`;
@@ -2271,7 +2306,7 @@ async function loadRealHourly(stock, force = false) {
     if (!response.ok) throw new Error("hourly api failed");
     const data = await response.json();
     if (Array.isArray(data.candles) && data.candles.length > 0) {
-      stock.realHourlyCandles = normalizeRealCandles(data.candles);
+      stock.realHourlyCandles = synthesizeHourlyVolumes(stock, normalizeRealCandles(data.candles));
       if (stock.realHourlyCandles.length === 0) throw new Error("hourly contained no valid candles");
       stock.hourlyLoaded = true;
       stock.hourlyLoadedAt = Date.now();
