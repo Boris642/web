@@ -51,6 +51,7 @@ const stocks = [
   { symbol: "3260", name: "威剛", sector: "記憶體", group: "AI", price: 112, volatility: 0.016, drift: 0.0003, baseVolume: 21000 },
   { symbol: "4967", name: "十銓", sector: "記憶體", group: "AI", price: 124, volatility: 0.018, drift: 0.0003, baseVolume: 16500 },
   { symbol: "8271", name: "宇瞻", sector: "記憶體", group: "AI", price: 71.2, volatility: 0.015, drift: 0.0002, baseVolume: 9000 },
+  { symbol: "8299", name: "群聯", sector: "記憶體", group: "AI", price: 610, volatility: 0.016, drift: 0.0003, baseVolume: 14500 },
   { symbol: "8374", name: "羅昇", sector: "自動化", group: "AI", price: 112, volatility: 0.022, drift: 0.0003, baseVolume: 13500 },
   { symbol: "8234", name: "新漢", sector: "自動化", group: "AI", price: 72.5, volatility: 0.018, drift: 0.0002, baseVolume: 8800 },
   { symbol: "2365", name: "昆盈", sector: "自動化", group: "AI", price: 39.4, volatility: 0.02, drift: 0.0002, baseVolume: 12800 },
@@ -173,7 +174,7 @@ const newsTemplates = [
   {
     title: "記憶體報價轉強，模組與 DRAM 股同步走高",
     body: "HBM 與高容量記憶體需求支撐報價，資金回補記憶體族群。",
-    symbols: ["2408", "2344", "3260", "4967", "8271"],
+    symbols: ["2408", "2344", "3260", "4967", "8271", "8299"],
     impact: 0.0035,
     volumeBoost: 2.3,
     tone: "利多"
@@ -200,6 +201,7 @@ const state = {
   marketVolumeBoost: 1,
   maVisible: { 5: true, 10: true, 20: false, 60: false },
   category: "all",
+  stockSearch: "",
   mode: "real",
   chartTimeframe: "1h",
   realChartTimeframe: "1h",
@@ -371,6 +373,10 @@ function mountReactAppShell() {
       h("label", { className: "filter-label" },
         "族群篩選",
         h("select", { id: "categoryFilter" })
+      ),
+      h("label", { className: "filter-label stock-search-label" },
+        "查詢股票",
+        h("input", { id: "stockSearch", type: "search", placeholder: "輸入代號或名稱" })
       ),
       h("div", { id: "stockList", className: "stock-list" })
     );
@@ -935,13 +941,24 @@ function simulatedLimitState(stock) {
 }
 
 function renderWatchlist() {
+  const query = state.stockSearch.trim().toLowerCase();
   const visibleStocks = stocks.filter((stock) => {
-    if (state.category === "all") return true;
-    if (state.category === "holdings") return (activePortfolio().positions[stock.symbol]?.shares || 0) > 0;
-    return stock.group === state.category || stock.sector === state.category;
+    const categoryMatch = state.category === "all"
+      || (state.category === "holdings" && (activePortfolio().positions[stock.symbol]?.shares || 0) > 0)
+      || stock.group === state.category
+      || stock.sector === state.category;
+    if (!categoryMatch) return false;
+    if (!query) return true;
+    return [stock.symbol, stock.name, stock.group, stock.sector]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(query));
   });
 
   if (visibleStocks.length === 0) {
+    if (query) {
+      $("stockList").innerHTML = `<div class="empty stock-empty">查無符合股票</div>`;
+      return;
+    }
     $("stockList").innerHTML = `<div class="empty stock-empty">目前沒有持股</div>`;
     return;
   }
@@ -977,6 +994,7 @@ function renderCategoryFilter() {
     .map((category) => `<option value="${category.value}">${category.label}</option>`)
     .join("");
   $("categoryFilter").value = state.category;
+  $("stockSearch").value = state.stockSearch;
 }
 
 function renderHeader() {
@@ -2686,6 +2704,10 @@ $("orderType").addEventListener("change", () => {
 });
 $("categoryFilter").addEventListener("change", (event) => {
   state.category = event.target.value;
+  renderWatchlist();
+});
+$("stockSearch").addEventListener("input", (event) => {
+  state.stockSearch = event.target.value;
   renderWatchlist();
 });
 $("marketMode").addEventListener("change", (event) => setMarketMode(event.target.value));

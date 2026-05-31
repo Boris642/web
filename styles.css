@@ -322,6 +322,10 @@ h3 {
   padding-right: 4px;
 }
 
+.stock-search-label input {
+  margin-top: 6px;
+}
+
 .stock-empty {
   padding: 18px 10px;
   color: var(--muted);
