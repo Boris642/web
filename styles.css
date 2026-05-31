@@ -293,15 +293,15 @@ h3 {
 }
 
 .news-positive {
-  color: var(--red);
+  color: #ff4d5f;
 }
 
 .news-negative {
-  color: var(--green);
+  color: #20c997;
 }
 
 .news-neutral {
-  color: var(--text);
+  color: #edf2f5;
 }
 
 .icon-button {
@@ -611,10 +611,31 @@ select {
   font-size: 13px;
 }
 
-.positions-panel {
+.positions-panel,
+.realized-panel {
   border-top: 0;
   padding: 16px;
   border-radius: 0 0 8px 8px;
+}
+
+.realized-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.realized-grid div {
+  display: grid;
+  gap: 8px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #14191d;
+}
+
+.realized-grid span {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .news-panel {

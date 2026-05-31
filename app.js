@@ -191,8 +191,8 @@ const state = {
   activeSymbol: "TAIEX",
   side: "buy",
   portfolios: {
-    real: { cash: 1000000, positions: {} },
-    sim: { cash: 1000000, positions: {} }
+    real: { cash: 1000000, positions: {}, realizedInvested: 0, realizedPnl: 0 },
+    sim: { cash: 1000000, positions: {}, realizedInvested: 0, realizedPnl: 0 }
   },
   shock: 1,
   indexBase: 36296.12,
@@ -227,9 +227,11 @@ function activePortfolio(mode = state.mode) {
 }
 
 function normalizePortfolio(saved) {
-  const portfolio = { cash: 1000000, positions: {} };
+  const portfolio = { cash: 1000000, positions: {}, realizedInvested: 0, realizedPnl: 0 };
   if (!saved || typeof saved !== "object") return portfolio;
   if (Number.isFinite(Number(saved.cash))) portfolio.cash = Math.max(0, Number(saved.cash));
+  if (Number.isFinite(Number(saved.realizedInvested))) portfolio.realizedInvested = Math.max(0, Number(saved.realizedInvested));
+  if (Number.isFinite(Number(saved.realizedPnl))) portfolio.realizedPnl = Number(saved.realizedPnl);
   if (saved.positions && typeof saved.positions === "object") {
     portfolio.positions = Object.fromEntries(
       Object.entries(saved.positions)
@@ -261,6 +263,8 @@ function savePortfolio(mode = state.mode) {
     localStorage.setItem(key, JSON.stringify({
       cash: portfolio.cash,
       positions: portfolio.positions,
+      realizedInvested: portfolio.realizedInvested || 0,
+      realizedPnl: portfolio.realizedPnl || 0,
       savedAt: new Date().toISOString()
     }));
   } catch {
@@ -293,9 +297,13 @@ function saveSimPortfolio() {
 
 function resetSimPortfolio() {
   state.portfolios.sim.positions = {};
+  state.portfolios.sim.realizedInvested = 0;
+  state.portfolios.sim.realizedPnl = 0;
   localStorage.setItem(SIM_PORTFOLIO_KEY, JSON.stringify({
     cash: state.portfolios.sim.cash,
     positions: {},
+    realizedInvested: 0,
+    realizedPnl: 0,
     savedAt: new Date().toISOString()
   }));
   addLog("模擬持股已歸零");
@@ -499,11 +507,26 @@ function mountReactAppShell() {
     );
   }
 
+  function RealizedPnlPanel() {
+    return h("section", { className: "realized-panel" },
+      h("div", { className: "panel-head" },
+        h("h2", null, "已實現損益"),
+        h("span", null, "賣出成交後累計")
+      ),
+      h("div", { className: "realized-grid" },
+        h("div", null, h("span", null, "投入資金"), h("strong", { id: "realizedInvested" }, "0")),
+        h("div", null, h("span", null, "賺了多少"), h("strong", { id: "realizedPnl" }, "0")),
+        h("div", null, h("span", null, "賺的%數"), h("strong", { id: "realizedPct" }, "0.00%"))
+      )
+    );
+  }
+
   function AppShell() {
     return h("main", { className: "app", "data-react-shell": "true" },
       h(MarketStrip),
       h("section", { className: "workspace" }, h(Watchlist), h(ChartPanel), h(TradeTicket)),
       h(PositionsPanel),
+      h(RealizedPnlPanel),
       h(NewsPanel)
     );
   }
@@ -1851,6 +1874,7 @@ function selectStock(symbol) {
     if (timeframeConfig().source === "daily") loadRealHistory(activeStock());
     else loadRealHourly(activeStock(), true);
   }
+  clampSellQuantity();
   renderOrderPreview();
   renderAll();
 }
@@ -1861,15 +1885,46 @@ function setSide(side) {
   $("sellTab").classList.toggle("active", side === "sell");
   $("submitOrder").textContent = side === "buy" ? "送出買單" : "送出賣單";
   $("submitOrder").classList.toggle("sell", side === "sell");
+  clampSellQuantity();
   renderOrderImpactPreview();
   renderOrderPreview();
 }
 
+function heldSharesForOrder() {
+  const stock = stocks.find((item) => item.symbol === $("symbolSelect").value) || activeStock();
+  return activePortfolio().positions[stock?.symbol]?.shares || 0;
+}
+
+function maxOrderQuantityForHeldShares(heldShares) {
+  if (state.orderUnit === "lot") return Math.floor(heldShares / 1000);
+  return Math.floor(heldShares);
+}
+
+function clampSellQuantity() {
+  const input = $("orderLots");
+  if (!input) return;
+  if (state.side !== "sell") {
+    input.max = "";
+    return;
+  }
+  const maxQuantity = maxOrderQuantityForHeldShares(heldSharesForOrder());
+  input.max = String(Math.max(0, maxQuantity));
+  if (maxQuantity <= 0) {
+    input.value = "0";
+    return;
+  }
+  const current = Math.max(1, Number(input.value) || 1);
+  if (current > maxQuantity) input.value = String(maxQuantity);
+}
+
 function sharesFromOrderInput() {
-  const quantity = Math.max(1, Number($("orderLots").value) || 1);
+  if (state.side === "sell") clampSellQuantity();
+  const rawQuantity = Number($("orderLots").value) || 0;
+  const quantity = state.side === "sell" ? Math.max(0, rawQuantity) : Math.max(1, rawQuantity || 1);
+  if (state.side === "sell" && quantity <= 0) return 0;
   return state.orderUnit === "lot"
     ? Math.max(1, Math.floor(quantity)) * 1000
-    : Math.max(1, Math.floor(quantity));
+    : Math.floor(quantity);
 }
 
 function formatOrderQuantity(shares) {
@@ -1888,6 +1943,7 @@ function setOrderUnit(unit) {
   if (!Number($("orderLots").value) || Number($("orderLots").value) < 1) {
     $("orderLots").value = "1";
   }
+  clampSellQuantity();
   renderOrderPreview();
   renderOrderImpactPreview();
 }
@@ -1895,13 +1951,14 @@ function setOrderUnit(unit) {
 function renderOrderPreview() {
   const stock = stocks.find((item) => item.symbol === $("symbolSelect").value) || activeStock();
   if (!stock) return;
+  clampSellQuantity();
   const shares = sharesFromOrderInput();
   const currentPrice = priceFor(stock);
   const orderType = $("orderType").value;
   const requestedPrice = Number($("orderPrice").value) || currentPrice;
   const fillPrice = orderType === "market" ? currentPrice : requestedPrice;
   const value = fillPrice * shares;
-  const fee = Math.max(20, value * 0.001425);
+  const fee = value > 0 ? Math.max(20, value * 0.001425) : 0;
   const tax = state.side === "sell" ? value * 0.003 : 0;
   const total = state.side === "buy" ? value + fee : value - fee - tax;
 
@@ -1937,6 +1994,7 @@ function simulatedImpactProjection(stock, impactPct) {
 
 function renderOrderImpactPreview() {
   if (!$("orderImpact") || state.mode !== "sim") return;
+  clampSellQuantity();
   const stock = stocks.find((item) => item.symbol === $("symbolSelect").value) || activeStock();
   const shares = sharesFromOrderInput();
   const currentPrice = priceFor(stock, "sim");
@@ -1993,7 +2051,12 @@ function submitOrder() {
     return;
   }
   const portfolio = activePortfolio();
+  clampSellQuantity();
   const shares = sharesFromOrderInput();
+  if (state.side === "sell" && shares <= 0) {
+    addLog(`庫存不足，${stock.name} 無可賣出股數`);
+    return;
+  }
   const orderType = $("orderType").value;
   const currentPrice = priceFor(stock);
   const requestedPrice = Number($("orderPrice").value) || currentPrice;
@@ -2025,8 +2088,12 @@ function submitOrder() {
       addLog(`庫存不足，${stock.name} ${formatOrderQuantity(shares)}未成交`);
       return;
     }
+    const invested = pos.avg * shares;
+    const realized = value - fee - tax - invested;
     pos.shares -= shares;
     portfolio.cash += value - fee - tax;
+    portfolio.realizedInvested = (portfolio.realizedInvested || 0) + invested;
+    portfolio.realizedPnl = (portfolio.realizedPnl || 0) + realized;
     if (pos.shares === 0) delete portfolio.positions[stock.symbol];
   }
 
@@ -2542,6 +2609,19 @@ function renderPositions() {
   $("equityValue").textContent = money.format(equity);
   $("unrealizedPnl").textContent = money.format(pnl);
   $("unrealizedPnl").className = pnl >= 0 ? "up" : "down";
+  renderRealizedPnl();
+}
+
+function renderRealizedPnl() {
+  const portfolio = activePortfolio();
+  const invested = Number(portfolio.realizedInvested) || 0;
+  const realized = Number(portfolio.realizedPnl) || 0;
+  const pct = invested > 0 ? (realized / invested) * 100 : 0;
+  $("realizedInvested").textContent = money.format(invested);
+  $("realizedPnl").textContent = money.format(realized);
+  $("realizedPnl").className = realized >= 0 ? "up" : "down";
+  $("realizedPct").textContent = `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`;
+  $("realizedPct").className = pct >= 0 ? "up" : "down";
 }
 
 function renderAll() {
@@ -2596,6 +2676,7 @@ $("orderPrice").addEventListener("input", () => {
   renderOrderImpactPreview();
 });
 $("orderLots").addEventListener("input", () => {
+  clampSellQuantity();
   renderOrderPreview();
   renderOrderImpactPreview();
 });
