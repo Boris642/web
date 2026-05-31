@@ -691,14 +691,44 @@ function buildCandles(stock) {
 }
 
 stocks.forEach(buildCandles);
-state.simTime = Math.max(...stocks.map((stock) => new Date(String(stock.simCandles?.at(-1)?.time || "").replace(" ", "T")).getTime()).filter(Number.isFinite));
+state.simTime = nextSimTradingTime(Math.max(...stocks.map((stock) => new Date(String(stock.simCandles?.at(-1)?.time || "").replace(" ", "T")).getTime()).filter(Number.isFinite))).time;
 
-function advanceSimTime() {
-  state.simTime = (Number.isFinite(state.simTime) ? state.simTime : Date.now()) + 30 * 60 * 1000;
-  return new Date(state.simTime).toLocaleString("sv-SE", {
+function taipeiStampFromMs(ms) {
+  return new Date(ms).toLocaleString("sv-SE", {
     hour12: false,
     timeZone: "Asia/Taipei"
   }).slice(0, 16);
+}
+
+function isWeekendTaipei(ms) {
+  const weekday = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Taipei", weekday: "short" }).format(new Date(ms));
+  return weekday === "Sat" || weekday === "Sun";
+}
+
+function nextSimTradingTime(fromMs) {
+  let ms = Number.isFinite(fromMs) ? fromMs + 30 * 60 * 1000 : Date.now();
+  for (let guard = 0; guard < 10; guard += 1) {
+    const stamp = taipeiStampFromMs(ms);
+    const [datePart, timePart] = stamp.split(" ");
+    const [hour, minute] = timePart.split(":").map(Number);
+    const minutes = hour * 60 + minute;
+    if (isWeekendTaipei(ms) || minutes > 13 * 60 + 30) {
+      ms = new Date(`${datePart}T09:00:00+08:00`).getTime() + 24 * 60 * 60 * 1000;
+      continue;
+    }
+    if (minutes < 9 * 60) {
+      ms = new Date(`${datePart}T09:00:00+08:00`).getTime();
+      continue;
+    }
+    return { time: ms, stamp, newSession: minutes === 9 * 60 };
+  }
+  return { time: ms, stamp: taipeiStampFromMs(ms), newSession: false };
+}
+
+function advanceSimTime() {
+  const next = nextSimTradingTime(state.simTime);
+  state.simTime = next.time;
+  return next;
 }
 
 function timeframeConfig(value = state.chartTimeframe) {
@@ -863,10 +893,14 @@ function tickMarket() {
     return;
   }
 
-  const simStamp = advanceSimTime();
+  const simClock = advanceSimTime();
   stocks.forEach((stock) => {
     const candles = candlesFor(stock, "sim");
     const last = candles.at(-1);
+    if (simClock.newSession) {
+      stock.simOpen = last.close;
+      stock.limitQueue = 0;
+    }
     const newsImpulse = stock.newsImpulse || 0;
     const orderImpulse = stock.orderImpulse || 0;
     const orderVolumeLots = stock.orderVolumeLots || 0;
@@ -887,7 +921,7 @@ function tickMarket() {
       low,
       close,
       volume,
-      time: simStamp
+      time: simClock.stamp
     });
     stock.simCandles = candles.slice(-88);
     stock.simPrice = close;
@@ -1865,7 +1899,7 @@ function onKeyDown(event) {
 }
 
 function marketStatusText() {
-  if (state.mode === "sim") return "模擬走勢中";
+  if (state.mode === "sim") return `模擬盤中 · ${taipeiStampFromMs(state.simTime).slice(5)}`;
   if (state.marketSyncInFlight) return "同步中...";
   if (!state.realSync) return "等待真實報價";
   const syncedAt = new Date(state.lastMarketSync).toLocaleTimeString("zh-TW", { hour12: false });
