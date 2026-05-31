@@ -372,6 +372,18 @@ h3 {
   text-align: right;
 }
 
+.stock-price.stock-up,
+.stock-price.stock-up strong,
+.stock-price.stock-up span {
+  color: #ff4d5f;
+}
+
+.stock-price.stock-down,
+.stock-price.stock-down strong,
+.stock-price.stock-down span {
+  color: #20c997;
+}
+
 .chart-shell {
   display: block;
 }

@@ -956,7 +956,7 @@ function renderWatchlist() {
       return `
         <button class="stock-row ${stock.symbol === state.activeSymbol ? "active" : ""}" data-symbol="${stock.symbol}" type="button">
           <span><strong>${stock.name}</strong><br>${stock.symbol} · ${stock.group} · ${stock.sector}${limitBadge}</span>
-          <span class="stock-price"><strong>${priceFmt.format(priceFor(stock))}</strong><br><span class="${change >= 0 ? "up" : "down"}">${formatSignedPct(change)}</span></span>
+          <span class="stock-price ${change >= 0 ? "stock-up" : "stock-down"}"><strong>${priceFmt.format(priceFor(stock))}</strong><br><span>${formatSignedPct(change)}</span></span>
         </button>
       `;
     })
