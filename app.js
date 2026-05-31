@@ -1046,6 +1046,7 @@ function drawChart() {
   const maxPrice = Math.max(...highs, ...maValues);
   const minPrice = Math.min(...lows, ...maValues);
   const maxVolume = Math.max(1, ...candles.map((c) => c.volume || 0));
+  const volumeAxisMax = volumeScaleMax(maxVolume);
   const baseline = baselinePriceForChart(stock, candles);
   chartHoverData = {
     type: "candles",
@@ -1094,7 +1095,7 @@ function drawChart() {
     const bodyTop = Math.min(yOpen, yClose);
     const bodyHeight = Math.max(2, Math.abs(yOpen - yClose));
     const bodyWidth = Math.max(4, candleWidth * 0.58);
-    const volumeTop = rect.height - pad.bottom - (candle.volume / maxVolume) * volumeHeight;
+    const volumeTop = rect.height - pad.bottom - (Math.min(candle.volume, volumeAxisMax) / volumeAxisMax) * volumeHeight;
 
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
@@ -1133,8 +1134,17 @@ function drawChart() {
 
   ctx.fillStyle = "#7d8a93";
   ctx.fillText("成交量", pad.left, rect.height - volumeHeight - 12);
-  ctx.fillText(`${money.format(maxVolume)} 張`, 8, rect.height - volumeHeight + 10);
+  ctx.fillText(`${money.format(volumeAxisMax)} 張`, 8, rect.height - volumeHeight + 10);
   drawTimeLabels(candles, pad, rect, candleWidth);
+}
+
+function volumeScaleMax(maxVolume) {
+  if (!Number.isFinite(maxVolume) || maxVolume <= 0) return 1;
+  const padded = maxVolume * 1.35;
+  const magnitude = 10 ** Math.floor(Math.log10(padded));
+  const normalized = padded / magnitude;
+  const step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return Math.max(1, step * magnitude);
 }
 
 function resizeCanvas(canvas, context, rect) {
