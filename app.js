@@ -636,7 +636,8 @@ function candlesFor(stock, mode = state.mode) {
     }
     return stock.realHourlyCandles || [];
   }
-  return stock.simCandles || [];
+  const simCandles = stock.simCandles || [];
+  return state.simPaused ? aggregateSimCandles(simCandles, state.chartTimeframe) : simCandles;
 }
 
 function activeCandles(stock) {
@@ -810,7 +811,35 @@ function aggregateCandles(candles, timeframe, mode = state.mode) {
   if (source === "daily") return aggregateDailyCandles(candles, timeframe);
   if (!minutes) return candles;
   if (mode === "real") return aggregateIntradayCandles(candles, minutes);
-  return aggregateSequentialCandles(candles, Math.max(1, Math.round(minutes / 5)));
+  return aggregateSequentialCandles(candles, Math.max(1, Math.round(minutes / 30)));
+}
+
+function aggregateSimCandles(candles, timeframe) {
+  if (!Array.isArray(candles) || candles.length === 0) return candles || [];
+  if (timeframe === "1h") return aggregateSequentialCandles(candles, 2);
+  const daily = aggregateSimDailyCandles(candles);
+  if (timeframe === "1d") return daily;
+  if (timeframe === "5d") return aggregateSequentialCandles(daily, 5);
+  if (timeframe === "1m") return aggregateMonthlyCandles(daily);
+  return candles;
+}
+
+function aggregateSimDailyCandles(candles) {
+  const buckets = new Map();
+  candles.forEach((candle) => {
+    const key = String(candle.time || "").slice(0, 10);
+    const existing = buckets.get(key);
+    if (!existing) {
+      buckets.set(key, { ...candle });
+      return;
+    }
+    existing.high = Math.max(existing.high, candle.high);
+    existing.low = Math.min(existing.low, candle.low);
+    existing.close = candle.close;
+    existing.volume = (existing.volume || 0) + (candle.volume || 0);
+    existing.time = candle.time;
+  });
+  return [...buckets.values()];
 }
 
 function aggregateDailyCandles(candles, timeframe) {
@@ -1061,7 +1090,7 @@ function renderHeader() {
   $("simFundingPanel").hidden = state.mode !== "sim";
   $("orderImpact").hidden = state.mode !== "sim";
   $("resetSimPortfolio").hidden = state.mode !== "sim";
-  $("timeframeBar").hidden = state.mode === "sim";
+  $("timeframeBar").hidden = state.mode === "sim" && !state.simPaused;
   $("pauseSim").textContent = state.simPaused ? "繼續模擬" : "暫停模擬";
   $("simStatus").textContent = state.simPaused ? "模擬已暫停" : "每 5 秒推進 30 分鐘";
   $("clock").textContent = new Date().toLocaleTimeString("zh-TW", { hour12: false, timeZone: "Asia/Taipei" });
@@ -2757,6 +2786,7 @@ $("shockButton").addEventListener("click", () => {
 $("pauseSim").addEventListener("click", () => {
   state.simPaused = !state.simPaused;
   addLog(state.simPaused ? "模擬走勢已暫停" : "模擬走勢已繼續");
+  renderChartControls();
   renderAll();
 });
 $("refreshNews").addEventListener("click", syncNews);
