@@ -1032,7 +1032,7 @@ function drawChart() {
   }
 
   const windowed = visibleWindow(allCandles);
-  const candles = windowed.candles;
+  const candles = ensureChartVolumes(stock, windowed.candles);
 
   const pad = { left: 58, right: 74, top: 24, bottom: 36 };
   const volumeHeight = Math.max(92, rect.height * 0.22);
@@ -1145,6 +1145,17 @@ function volumeScaleMax(maxVolume) {
   const normalized = padded / magnitude;
   const step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
   return Math.max(1, step * magnitude);
+}
+
+function ensureChartVolumes(stock, candles) {
+  if (!Array.isArray(candles) || candles.length === 0) return candles || [];
+  const volumes = candles.map((candle) => Number(candle.volume) || 0);
+  const maxVolume = Math.max(...volumes);
+  const positiveVolumes = volumes.filter((volume) => volume > 0);
+  const minPositiveVolume = positiveVolumes.length ? Math.min(...positiveVolumes) : 0;
+  const flatTinyVolume = maxVolume <= 1 || (minPositiveVolume > 0 && maxVolume / minPositiveVolume < 1.12);
+  if (!flatTinyVolume) return candles;
+  return synthesizeHourlyVolumes(stock, candles, true);
 }
 
 function resizeCanvas(canvas, context, rect) {
@@ -2078,11 +2089,11 @@ function hourlyVolumeWeight(candle) {
   return 0.22;
 }
 
-function synthesizeHourlyVolumes(stock, candles) {
+function synthesizeHourlyVolumes(stock, candles, force = false) {
   if (!Array.isArray(candles) || candles.length === 0) return candles || [];
   const maxVolume = Math.max(...candles.map((candle) => Number(candle.volume) || 0));
   const uniqueVolumeCount = new Set(candles.map((candle) => Number(candle.volume) || 0)).size;
-  if (maxVolume > 1 || uniqueVolumeCount > 2) return candles;
+  if (!force && (maxVolume > 1 || uniqueVolumeCount > 2)) return candles;
 
   const baseVolume = Math.max(1200, Number(stock.baseVolume) || 1200);
   return candles.map((candle, index) => {
