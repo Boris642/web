@@ -188,7 +188,20 @@ const timeframeOptions = [
   { value: "1m", label: "1M", tradingDays: 20, source: "daily" }
 ];
 
-const SIM_HISTORY_BARS = 4320;
+function detectMobileRuntime() {
+  if (typeof window === "undefined") return false;
+  const ua = typeof navigator !== "undefined" ? navigator.userAgent || "" : "";
+  return window.matchMedia?.("(max-width: 860px)").matches || /iPhone|iPad|iPod|Android/i.test(ua);
+}
+
+function initialSimHistoryBars() {
+  if (detectMobileRuntime()) return 480;
+  const memory = Number(typeof navigator !== "undefined" ? navigator.deviceMemory : 0);
+  if (Number.isFinite(memory) && memory > 0 && memory <= 4) return 720;
+  return 1440;
+}
+
+const SIM_HISTORY_BARS = initialSimHistoryBars();
 const REAL_DAILY_HISTORY_BARS = 1250;
 const REAL_INTRADAY_HISTORY_BARS = 1400;
 
