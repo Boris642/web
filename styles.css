@@ -28,6 +28,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: "Microsoft JhengHei", "PingFang TC", Arial, sans-serif;
+  overflow-x: hidden;
 }
 
 button,
@@ -57,6 +58,7 @@ select {
   align-items: stretch;
   padding: 16px;
   border-radius: 8px 8px 0 0;
+  overflow: hidden;
 }
 
 .eyebrow,
@@ -149,6 +151,7 @@ h3 {
   grid-template-columns: 290px minmax(480px, 1fr) 310px;
   min-height: 660px;
   border-top: 0;
+  align-items: start;
 }
 
 .watchlist,
@@ -156,6 +159,11 @@ h3 {
 .trade-ticket {
   min-width: 0;
   padding: 16px;
+}
+
+.watchlist,
+.trade-ticket {
+  align-self: stretch;
 }
 
 .chart-panel {
@@ -748,6 +756,7 @@ select {
 
 .table-wrap {
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 table {
@@ -772,20 +781,133 @@ td:first-child {
   text-align: center;
 }
 
+@media (max-width: 1360px) {
+  .market-strip {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .market-strip > :first-child {
+    grid-column: 1 / -1;
+  }
+
+  .workspace {
+    grid-template-columns: 250px minmax(0, 1fr) 290px;
+  }
+}
+
 @media (max-width: 1120px) {
-  .market-strip,
-  .workspace,
+  .market-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .market-strip > :first-child {
+    grid-column: 1 / -1;
+  }
+
+  .workspace {
+    grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
+  }
+
+  .trade-ticket {
+    grid-column: 1 / -1;
+    border-top: 1px solid var(--line);
+  }
+
   .news-list {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .realized-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .chart-panel {
-    border-inline: 0;
-    border-block: 1px solid var(--line);
+    border-right: 0;
   }
 
   #priceChart {
     min-height: 360px;
+  }
+}
+
+@media (max-width: 860px) {
+  .app {
+    width: calc(100vw - 20px);
+    padding-top: 12px;
+  }
+
+  .market-strip,
+  .workspace,
+  .news-list,
+  .realized-grid,
+  .summary-grid,
+  .order-preview {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace {
+    min-height: 0;
+  }
+
+  .watchlist,
+  .chart-panel,
+  .trade-ticket,
+  .news-panel,
+  .positions-panel,
+  .realized-panel {
+    padding: 14px;
+  }
+
+  .watchlist,
+  .chart-panel,
+  .trade-ticket {
+    border: 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .watchlist {
+    border-top: 0;
+  }
+
+  .stock-list,
+  #tradeLog {
+    max-height: none;
+  }
+
+  .chart-head {
+    gap: 10px;
+  }
+
+  .chart-topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .timeframe-bar,
+  .chart-status {
+    flex-wrap: wrap;
+  }
+
+  .quote-box {
+    width: 100%;
+    text-align: left;
+  }
+
+  .quote-state {
+    justify-content: flex-start;
+  }
+
+  .funding-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .funding-panel .secondary-action {
+    width: 100%;
+  }
+
+  #priceChart,
+  .chart-stage {
+    min-height: 340px;
   }
 }
 
@@ -799,8 +921,15 @@ td:first-child {
   .watchlist,
   .chart-panel,
   .trade-ticket,
-  .positions-panel {
+  .positions-panel,
+  .realized-panel,
+  .news-panel {
     padding: 12px;
+  }
+
+  .market-strip {
+    gap: 10px;
+    grid-template-columns: 1fr;
   }
 
   .panel-head {
@@ -808,16 +937,98 @@ td:first-child {
     flex-direction: column;
   }
 
-  .chart-topbar {
-    align-items: flex-start;
-    flex-direction: column;
+  .market-card strong,
+  .quote-box strong {
+    font-size: 24px;
   }
 
-  .timeframe-bar {
-    flex-wrap: wrap;
+  .timeframe-button {
+    min-width: 0;
+    flex: 1 1 calc(50% - 8px);
   }
 
-  .quote-box {
-    text-align: left;
+  .chart-mini-button {
+    min-width: 44px;
+  }
+
+  .ma-controls label {
+    flex: 1 1 calc(50% - 8px);
+    justify-content: center;
+  }
+
+  th,
+  td {
+    padding: 10px 8px;
+    font-size: 12px;
+  }
+
+  .news-card {
+    min-height: 0;
+  }
+
+  .news-card h3 {
+    min-height: 0;
+    font-size: 14px;
+  }
+
+  .apply-news,
+  .primary-action,
+  .secondary-action {
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 480px) {
+  h1 {
+    font-size: 22px;
+  }
+
+  h2 {
+    font-size: 16px;
+  }
+
+  .app {
+    width: calc(100vw - 12px);
+  }
+
+  .market-strip,
+  .watchlist,
+  .chart-panel,
+  .trade-ticket,
+  .positions-panel,
+  .realized-panel,
+  .news-panel {
+    padding: 10px;
+  }
+
+  .timeframe-button,
+  .ma-controls label {
+    flex-basis: 100%;
+  }
+
+  .segmented {
+    grid-template-columns: 1fr;
+  }
+
+  #priceChart,
+  .chart-stage {
+    min-height: 300px;
+  }
+
+  .chart-tooltip {
+    min-width: 148px;
+    padding: 8px 9px;
+    font-size: 11px;
+  }
+
+  .quote-state {
+    gap: 6px;
+  }
+
+  .limit-badge,
+  .queue-badge,
+  .stock-limit-pill {
+    font-size: 11px;
+    padding: 4px 6px;
   }
 }
