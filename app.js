@@ -1932,6 +1932,7 @@ function onChartDragStart(event) {
   if (event.cancelable) event.preventDefault();
   state.chartDragging = true;
   state.dragAnchorX = point.rawX;
+  showChartTooltip(event);
   renderChartControls();
 }
 
@@ -1951,6 +1952,7 @@ function onChartDragMove(event) {
 
 function onChartDragEnd() {
   state.chartDragging = false;
+  hideChartTooltip();
   renderChartControls();
 }
 
@@ -2854,6 +2856,7 @@ chart.addEventListener("touchmove", onChartDragMove, { passive: false });
 chart.addEventListener("touchend", onChartDragEnd);
 chart.addEventListener("touchcancel", onChartDragEnd);
 window.addEventListener("mouseup", onChartDragEnd);
+window.addEventListener("scroll", hideChartTooltip, { passive: true });
 window.addEventListener("keydown", onKeyDown);
 
 state.mode = "real";
