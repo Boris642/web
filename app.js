@@ -585,10 +585,21 @@ function roundTick(value) {
   return Math.round(value / 5) * 5;
 }
 
+function simLimitBase(stock) {
+  const base = Number(stock.simLimitBase ?? stock.simOpen ?? stock.price);
+  return Number.isFinite(base) && base > 0 ? base : Math.max(1, Number(stock.price) || 1);
+}
+
+function simLimitPrices(stock) {
+  const base = simLimitBase(stock);
+  return {
+    lower: roundTick(base * 0.9),
+    upper: roundTick(base * 1.1)
+  };
+}
+
 function clampToLimit(stock, value) {
-  const open = openFor(stock, "sim");
-  const lower = open * 0.9;
-  const upper = open * 1.1;
+  const { lower, upper } = simLimitPrices(stock);
   return Math.min(upper, Math.max(lower, value));
 }
 
@@ -664,12 +675,12 @@ function activeCandles(stock) {
 function priceFor(stock, mode = state.mode) {
   const candles = candlesFor(stock, mode);
   if (modeKey(mode) === "real") return candles?.at(-1)?.close ?? stock.realPrice ?? stock.price;
-  return candles?.at(-1)?.close ?? stock.price;
+  return roundTick(clampToLimit(stock, candles?.at(-1)?.close ?? stock.simPrice ?? stock.price));
 }
 
 function openFor(stock, mode = state.mode) {
   if (modeKey(mode) === "real") return stock.realOpen ?? stock.open ?? stock.price;
-  return stock.simOpen ?? stock.open ?? stock.price;
+  return simLimitBase(stock);
 }
 
 function volumeFor(stock, mode = state.mode) {
@@ -680,10 +691,15 @@ function volumeFor(stock, mode = state.mode) {
 function buildCandles(stock) {
   const candles = [];
   const now = Date.now();
-  let price = stock.price * (0.985 + Math.random() * 0.03);
+  const basePrice = Math.max(1, Number(stock.price) || 1);
+  const trend = (Math.random() - 0.45) * 0.28;
+  let price = basePrice * (0.96 + Math.random() * 0.08);
   for (let i = 0; i < SIM_HISTORY_BARS; i += 1) {
-    const pulse = Math.sin(i / 7) * stock.volatility * 0.9;
-    const move = stock.drift + pulse + randomNormal() * stock.volatility;
+    const progress = i / Math.max(1, SIM_HISTORY_BARS - 1);
+    const wave = Math.sin(i / 18) * stock.volatility * 3 + Math.sin(i / 93) * stock.volatility * 6;
+    const target = basePrice * (1 + trend * (progress - 0.5) + wave);
+    const meanReversion = (target - price) / Math.max(1, price) * 0.16;
+    const move = Math.max(-0.035, Math.min(0.035, stock.drift + meanReversion + randomNormal() * stock.volatility * 0.55));
     const open = price;
     const close = Math.max(1, roundTick(open * (1 + move)));
     const high = roundTick(Math.max(open, close) * (1 + Math.random() * stock.volatility * 1.6));
@@ -700,6 +716,7 @@ function buildCandles(stock) {
   stock.simPrice = candles.at(-1).close;
   // Seeded candles are context only; trading limits start from the live simulation quote.
   stock.simOpen = candles.at(-1).close;
+  stock.simLimitBase = candles.at(-1).close;
   stock.simCandles = candles;
   stock.realPrice = stock.price;
   stock.realOpen = stock.price;
@@ -942,9 +959,10 @@ function tickMarket() {
   const simClock = advanceSimTime();
   stocks.forEach((stock) => {
     const candles = candlesFor(stock, "sim");
-    const last = candles.at(-1);
+    const previousClose = priceFor(stock, "sim");
     if (simClock.newSession) {
-      stock.simOpen = last.close;
+      stock.simOpen = previousClose;
+      stock.simLimitBase = previousClose;
       stock.limitQueue = 0;
     }
     const newsImpulse = stock.newsImpulse || 0;
@@ -954,7 +972,7 @@ function tickMarket() {
     const queuedRatio = Math.abs(queuedShares) / Math.max(1, stock.baseVolume * 1000);
     const queuedPressure = Math.sign(queuedShares) * Math.min(0.02, Math.sqrt(queuedRatio) * 0.003);
     const pressure = stock.drift + state.marketImpulse + newsImpulse + orderImpulse + queuedPressure + randomNormal() * stock.volatility * state.shock;
-    const open = last.close;
+    const open = previousClose;
     const close = Math.max(1, roundTick(clampToLimit(stock, open * (1 + pressure))));
     const high = roundTick(clampToLimit(stock, Math.max(open, close) * (1 + Math.random() * stock.volatility)));
     const low = roundTick(clampToLimit(stock, Math.min(open, close) * (1 - Math.random() * stock.volatility)));
