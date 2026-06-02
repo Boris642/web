@@ -1001,9 +1001,28 @@ function tickMarket() {
   renderAll();
 }
 
+function realPreviousCloseFromCandles(stock) {
+  const candles = stock.realCandles || [];
+  if (candles.length >= 2) return candles.at(-2).close;
+  return null;
+}
+
+function changeBaseFor(stock, mode = state.mode) {
+  if (modeKey(mode) === "real") {
+    const base = stock.realQuote?.previousClose
+      ?? stock.realPreviousClose
+      ?? realPreviousCloseFromCandles(stock)
+      ?? stock.realOpen
+      ?? stock.price;
+    return Number.isFinite(Number(base)) && Number(base) > 0 ? Number(base) : priceFor(stock, mode);
+  }
+  return simLimitBase(stock);
+}
+
 function changePct(stock) {
-  const open = openFor(stock);
-  return ((priceFor(stock) - open) / open) * 100;
+  const base = changeBaseFor(stock);
+  if (!Number.isFinite(base) || base <= 0) return 0;
+  return ((priceFor(stock) - base) / base) * 100;
 }
 
 function activeStock() {
@@ -1452,13 +1471,7 @@ function hideChartTooltip() {
 }
 
 function baselinePriceForChart(stock, candles) {
-  if (state.mode === "real") {
-    if (timeframeConfig().source === "daily") {
-      return stock.realQuote?.previousClose || candles[0]?.open || priceFor(stock);
-    }
-    return stock.realQuote?.previousClose || candles[0]?.open || priceFor(stock);
-  }
-  return candles[0]?.open || priceFor(stock);
+  return changeBaseFor(stock) || candles[0]?.open || priceFor(stock);
 }
 
 function chartKey() {
@@ -2419,6 +2432,7 @@ function applyQuote(stock, quote) {
   };
 
   stock.realOpen = open;
+  stock.realPreviousClose = previousClose;
   stock.realPrice = candle.close;
   stock.realQuote = quote;
   applyLiveQuote(stock, quote, candle.close);
@@ -2521,6 +2535,9 @@ async function loadRealHistory(stock, force = false) {
       stock.realCandles = normalizeRealCandles(data.candles);
       if (stock.realCandles.length === 0) throw new Error("history contained no valid candles");
       stock.realOpen = stock.realCandles.at(-1).open;
+      stock.realPreviousClose = stock.realCandles.length >= 2
+        ? stock.realCandles.at(-2).close
+        : stock.realCandles.at(-1).open;
       stock.realPrice = stock.realCandles.at(-1).close;
       stock.historyLoaded = true;
       stock.historyLoadedAt = Date.now();
