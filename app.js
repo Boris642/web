@@ -1165,13 +1165,14 @@ function drawChart() {
   const stock = activeStock();
   const allCandles = activeCandles(stock);
   const rect = stage.getBoundingClientRect();
+  const compact = rect.width < 520;
   resizeCanvas(chart, ctx, rect);
   ctx.clearRect(0, 0, rect.width, rect.height);
 
   if (!allCandles || allCandles.length === 0) {
     chartHoverData = null;
     ctx.fillStyle = "#7d8a93";
-    ctx.font = "15px Microsoft JhengHei, Arial";
+    ctx.font = compact ? "13px Microsoft JhengHei, Arial" : "15px Microsoft JhengHei, Arial";
     const message = state.mode === "real" && timeframeConfig().source === "intraday"
       ? "當日分 K 尚無資料，開盤同步後會開始累積"
       : state.mode === "real"
@@ -1184,8 +1185,10 @@ function drawChart() {
   const windowed = visibleWindow(allCandles);
   const candles = ensureChartVolumes(stock, windowed.candles);
 
-  const pad = { left: 58, right: 74, top: 24, bottom: 36 };
-  const volumeHeight = Math.max(92, rect.height * 0.22);
+  const pad = compact
+    ? { left: 34, right: state.showPercentAxis ? 52 : 14, top: 18, bottom: 30 }
+    : { left: 58, right: 74, top: 24, bottom: 36 };
+  const volumeHeight = Math.max(compact ? 78 : 92, rect.height * (compact ? 0.18 : 0.22));
   const priceBottom = rect.height - pad.bottom - volumeHeight - 18;
   const chartWidth = rect.width - pad.left - pad.right;
   const candleWidth = chartWidth / Math.max(candles.length, 1);
@@ -1216,7 +1219,7 @@ function drawChart() {
 
   ctx.strokeStyle = "#202a31";
   ctx.lineWidth = 1;
-  ctx.font = "12px Microsoft JhengHei, Arial";
+  ctx.font = compact ? "10px Microsoft JhengHei, Arial" : "12px Microsoft JhengHei, Arial";
   ctx.fillStyle = "#7d8a93";
   for (let i = 0; i <= 5; i += 1) {
     const y = pad.top + ((priceBottom - pad.top) * i) / 5;
@@ -1229,7 +1232,7 @@ function drawChart() {
     if (state.showPercentAxis) {
       const pct = ((price - baseline) / baseline) * 100;
       ctx.textAlign = "right";
-      ctx.fillText(formatSignedPct(pct), rect.width - 10, y + 4);
+      ctx.fillText(formatSignedPct(pct), rect.width - 8, y + 4);
       ctx.textAlign = "left";
     }
   }
@@ -1244,7 +1247,7 @@ function drawChart() {
     const color = rising ? "#ff4d5f" : "#20c997";
     const bodyTop = Math.min(yOpen, yClose);
     const bodyHeight = Math.max(2, Math.abs(yOpen - yClose));
-    const bodyWidth = Math.max(4, candleWidth * 0.58);
+    const bodyWidth = Math.max(compact ? 3 : 4, candleWidth * (compact ? 0.52 : 0.58));
     const volumeTop = rect.height - pad.bottom - (Math.min(candle.volume, volumeAxisMax) / volumeAxisMax) * volumeHeight;
 
     ctx.strokeStyle = color;
@@ -1280,9 +1283,10 @@ function drawChart() {
     ctx.stroke();
   });
 
-  drawMaLegend(maSeries, rect.width - pad.right - 265, pad.top + 4);
+  if (!compact) drawMaLegend(maSeries, rect.width - pad.right - 265, pad.top + 4);
 
   ctx.fillStyle = "#7d8a93";
+  ctx.font = compact ? "10px Microsoft JhengHei, Arial" : "12px Microsoft JhengHei, Arial";
   ctx.fillText("成交量", pad.left, rect.height - volumeHeight - 12);
   ctx.fillText(`${money.format(volumeAxisMax)} 張`, 8, rect.height - volumeHeight + 10);
   drawTimeLabels(candles, pad, rect, candleWidth);
@@ -1313,6 +1317,12 @@ function resizeCanvas(canvas, context, rect) {
   canvas.width = Math.floor(rect.width * dpr);
   canvas.height = Math.floor(rect.height * dpr);
   context.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function eventClientPoint(event) {
+  if (event.touches?.length) return event.touches[0];
+  if (event.changedTouches?.length) return event.changedTouches[0];
+  return event;
 }
 
 function buildVisibleMaSeries(candles) {
@@ -1385,22 +1395,25 @@ function compactFlatIntraday(candles) {
 }
 
 function drawTimeLabels(candles, pad, rect, candleWidth) {
-  const labelCount = Math.min(5, candles.length);
+  const compact = rect.width < 520;
+  const labelCount = Math.min(compact ? 3 : 5, candles.length);
   if (labelCount <= 0) return;
   ctx.fillStyle = "#7d8a93";
+  ctx.font = compact ? "10px Microsoft JhengHei, Arial" : "12px Microsoft JhengHei, Arial";
   ctx.textAlign = "center";
   for (let i = 0; i < labelCount; i += 1) {
     const index = Math.min(candles.length - 1, Math.round((i * (candles.length - 1)) / Math.max(1, labelCount - 1)));
     const x = pad.left + index * candleWidth + candleWidth / 2;
-    const timeLabel = formatAxisTime(candles[index].time);
+    const timeLabel = formatAxisTime(candles[index].time, compact);
     ctx.fillText(timeLabel, x, rect.height - 12);
   }
   ctx.textAlign = "left";
 }
 
-function formatAxisTime(time) {
+function formatAxisTime(time, compact = false) {
   const text = String(time || "");
   if (timeframeConfig().source === "daily") return text.slice(5, 10) || text;
+  if (compact) return text.slice(11, 16) || text.slice(-5) || text;
   return text.length >= 16 ? `${text.slice(5, 10)} ${text.slice(11, 16)}` : text.slice(-5) || text;
 }
 
@@ -1489,8 +1502,9 @@ function screenPointFor(drawPoint) {
 function chartPointFromEvent(event, allowOutside = false) {
   if (!chartHoverData) return null;
   const rect = chart.getBoundingClientRect();
-  const x = event.clientX - rect.left;
-  const y = event.clientY - rect.top;
+  const pointer = eventClientPoint(event);
+  const x = pointer.clientX - rect.left;
+  const y = pointer.clientY - rect.top;
   const plotX = x;
   const plotY = y;
   const { candles, pad, candleWidth, rectWidth, rectHeight, priceBottom, minPrice, maxPrice, startIndex } = chartHoverData;
@@ -1933,13 +1947,16 @@ function distanceBetween(a, b) {
 function onChartDragStart(event) {
   const point = chartPointFromEvent(event, true);
   if (!point) return;
+  if (event.cancelable) event.preventDefault();
   state.chartDragging = true;
   state.dragAnchorX = point.rawX;
+  showChartTooltip(event);
   renderChartControls();
 }
 
 function onChartDragMove(event) {
   if (state.chartDragging && chartHoverData) {
+    if (event.cancelable) event.preventDefault();
     const point = chartPointFromEvent(event, true);
     if (!point) return;
     const deltaBars = Math.round((state.dragAnchorX - point.rawX) / Math.max(1, chartHoverData.candleWidth));
@@ -1953,6 +1970,7 @@ function onChartDragMove(event) {
 
 function onChartDragEnd() {
   state.chartDragging = false;
+  hideChartTooltip();
   renderChartControls();
 }
 
@@ -2851,7 +2869,12 @@ chart.addEventListener("mousedown", onChartDragStart);
 chart.addEventListener("mousemove", onChartDragMove);
 chart.addEventListener("mouseleave", hideChartTooltip);
 chart.addEventListener("wheel", onChartWheel, { passive: false });
+chart.addEventListener("touchstart", onChartDragStart, { passive: false });
+chart.addEventListener("touchmove", onChartDragMove, { passive: false });
+chart.addEventListener("touchend", onChartDragEnd);
+chart.addEventListener("touchcancel", onChartDragEnd);
 window.addEventListener("mouseup", onChartDragEnd);
+window.addEventListener("scroll", hideChartTooltip, { passive: true });
 window.addEventListener("keydown", onKeyDown);
 
 state.mode = "real";
