@@ -414,6 +414,7 @@ h3 {
   border: 1px solid var(--line);
   border-radius: 12px;
   background: #0d1114;
+  touch-action: none;
 }
 
 .chart-tooltip {
@@ -438,8 +439,8 @@ h3 {
 }
 
 .ma-controls {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   margin-bottom: 12px;
 }
@@ -952,8 +953,11 @@ td:first-child {
   }
 
   .ma-controls label {
-    flex: 1 1 calc(50% - 8px);
     justify-content: center;
+  }
+
+  .ma-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   th,
@@ -1006,13 +1010,23 @@ td:first-child {
     flex-basis: 100%;
   }
 
+  .ma-controls {
+    gap: 6px;
+  }
+
+  .ma-controls label {
+    min-height: 40px;
+    padding: 6px 8px;
+    font-size: 12px;
+  }
+
   .segmented {
     grid-template-columns: 1fr;
   }
 
   #priceChart,
   .chart-stage {
-    min-height: 300px;
+    min-height: 420px;
   }
 
   .chart-tooltip {
